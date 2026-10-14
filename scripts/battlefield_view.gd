@@ -37,12 +37,15 @@ var move_marker_timer: float = 0.0
 
 # Reused visible list and stable tie ranks; native O(N log N) sorting.
 var _ordered_units: Array = []
-var _draw_order: Dictionary = {}
+var _visible_indices: Array[int] = []
+var _sort_source: Array = []
 
 # Trailing HP ghost bar state & facing cache (keyed by unit.id)
 var _hp_ghost: Dictionary = {}
 var _unit_facing: Dictionary = {}
 var _live_ids: Dictionary = {}
+var _membership_ids: Array[int] = []
+var _membership_initialized := false
 var _cache_prune: Array[int] = []
 
 # Pre-allocated Struct-of-Arrays (SoA) ring buffer for particles (zero GC churn)
@@ -55,6 +58,8 @@ var _p_tint := PackedColorArray()
 var _p_rising := PackedByteArray()
 var _p_cursor: int = 0
 var _p_active_count: int = 0
+# Sorted physical slots preserve ring overwrite, wind phase and alpha order.
+var _p_active_indices: Array[int] = []
 
 # Lightweight pooled arrays for pulses, revival rings, and ambient motes
 var pulses: Array = []
@@ -94,12 +99,15 @@ func reset_effects() -> void:
 		_p_life[i] = 0.0
 	_p_cursor = 0
 	_p_active_count = 0
+	_p_active_indices.clear()
 	pulses.clear()
 	rings.clear()
 	motes.clear()
 	_hp_ghost.clear()
 	_unit_facing.clear()
 	_live_ids.clear()
+	_membership_ids.clear()
+	_membership_initialized = false
 	_cache_prune.clear()
 	for i in range(MAX_MOTES):
 		motes.append({
@@ -154,6 +162,8 @@ func emit_particles(point: Vector2, tint: Color, count: int, rising: bool = fals
 			vel.y = -absf(vel.y) - randf_range(28.0, 64.0)
 			vel.x *= 0.55
 		var lifetime: float = randf_range(0.32, 0.68) if not rising else randf_range(0.45, 0.85)
+		if _p_life[idx] <= 0.0:
+			_p_active_indices.insert(_p_active_indices.bsearch(idx), idx)
 		_p_pos[idx] = point + Vector2(randf_range(-6.0, 6.0), randf_range(-4.0, 4.0))
 		_p_vel[idx] = vel
 		_p_life[idx] = lifetime
@@ -161,7 +171,7 @@ func emit_particles(point: Vector2, tint: Color, count: int, rising: bool = fals
 		_p_size[idx] = randf_range(4.0, 8.5) if not rising else randf_range(5.0, 9.5)
 		_p_tint[idx] = tint
 		_p_rising[idx] = 1 if rising else 0
-	_p_active_count = mini(_p_active_count + count, MAX_PARTICLES)
+	_p_active_count = _p_active_indices.size()
 
 
 func animate(delta: float) -> void:
@@ -171,15 +181,20 @@ func animate(delta: float) -> void:
 
 	# Update SoA particle pool in-place (zero allocations)
 	var active := 0
+	var compacting := false
 	if _p_active_count > 0:
-		for i in range(MAX_PARTICLES):
+		for i in _p_active_indices:
 			var life: float = _p_life[i]
 			if life <= 0.0:
+				compacting = true
 				continue
 			life -= delta
 			_p_life[i] = life
 			if life <= 0.0:
+				compacting = true
 				continue
+			if compacting:
+				_p_active_indices[active] = i
 			active += 1
 			var vel: Vector2 = _p_vel[i]
 			if _p_rising[i] == 1:
@@ -190,6 +205,8 @@ func animate(delta: float) -> void:
 				vel.y += 95.0 * delta
 			_p_vel[i] = vel
 			_p_pos[i] += vel * delta
+	if compacting:
+		_p_active_indices.resize(active)
 	_p_active_count = active
 
 	# Update impact pulses backward using swap-and-pop
@@ -237,30 +254,48 @@ func animate(delta: float) -> void:
 
 	# Decay trailing HP ghost values smoothly
 	if battle != null and "units" in battle:
-		_live_ids.clear()
-		for unit in battle.units:
+		var units: Array = battle.units
+		var membership_changed := not _membership_initialized or units.size() != _membership_ids.size()
+		for index in range(units.size()):
+			var unit: Dictionary = units[index]
 			var uid: int = unit.get("id", -1)
-			_live_ids[uid] = true
-			var max_hp: float = unit_max_hp(unit)
-			var ratio: float = clampf(float(unit.get("hp", max_hp)) / max_hp, 0.0, 1.0)
+			if not membership_changed and uid != _membership_ids[index]:
+				membership_changed = true
+			var max_hp: float = float(unit.get("max_hp", 0.0))
+			if not max_hp >= 1.0:
+				max_hp = unit_max_hp(unit)
+			var hp: float = float(unit.get("hp", max_hp))
+			if hp >= max_hp:
+				if _hp_ghost.has(uid):
+					_hp_ghost.erase(uid)
+				continue
+			var ratio: float = clampf(hp / max_hp, 0.0, 1.0)
 			var prev_ghost: float = _hp_ghost.get(uid, ratio)
 			if ratio < 1.0:
 				_hp_ghost[uid] = move_toward(prev_ghost, ratio, delta * 0.95) if ratio < prev_ghost else ratio
 			else:
 				_hp_ghost.erase(uid)
-		# Prune both caches independently: healthy soldiers need no HP entry.
-		_cache_prune.clear()
-		for uid in _hp_ghost:
-			if not _live_ids.has(uid):
-				_cache_prune.append(uid)
-		for uid in _cache_prune:
-			_hp_ghost.erase(uid)
-		_cache_prune.clear()
-		for uid in _unit_facing:
-			if not _live_ids.has(uid):
-				_cache_prune.append(uid)
-		for uid in _cache_prune:
-			_unit_facing.erase(uid)
+		if membership_changed:
+			_membership_initialized = true
+			_membership_ids.resize(units.size())
+			_live_ids.clear()
+			for index in range(units.size()):
+				var uid: int = units[index].get("id", -1)
+				_membership_ids[index] = uid
+				_live_ids[uid] = true
+			# Rebuild/prune only on actual identity changes, including same-count swaps.
+			_cache_prune.clear()
+			for uid in _hp_ghost:
+				if not _live_ids.has(uid):
+					_cache_prune.append(uid)
+			for uid in _cache_prune:
+				_hp_ghost.erase(uid)
+			_cache_prune.clear()
+			for uid in _unit_facing:
+				if not _live_ids.has(uid):
+					_cache_prune.append(uid)
+			for uid in _cache_prune:
+				_unit_facing.erase(uid)
 
 	queue_redraw()
 
@@ -284,21 +319,22 @@ func unit_max_hp(unit: Dictionary) -> float:
 
 
 func _sort_units_by_y() -> void:
-	var src: Array = battle.units
+	_sort_source = battle.units
 	_ordered_units.clear()
-	_draw_order.clear()
-	for unit in src:
-		if visible_world.has_point(unit.pos):
-			_draw_order[unit.id] = _ordered_units.size()
-			_ordered_units.append(unit)
-	_ordered_units.sort_custom(_compare_unit_y)
+	_visible_indices.clear()
+	for i in range(_sort_source.size()):
+		if visible_world.has_point(_sort_source[i].pos):
+			_visible_indices.append(i)
+	_visible_indices.sort_custom(_compare_unit_indices)
+	for i in _visible_indices:
+		_ordered_units.append(_sort_source[i])
 
 
-func _compare_unit_y(a: Dictionary, b: Dictionary) -> bool:
-	var ay: float = a.pos.y
-	var by: float = b.pos.y
-	# Explicit source-order ties preserve the original stable insertion sort.
-	return ay < by if ay != by else _draw_order[a.id] < _draw_order[b.id]
+func _compare_unit_indices(a: int, b: int) -> bool:
+	var ay: float = _sort_source[a].pos.y
+	var by: float = _sort_source[b].pos.y
+	# Source indices preserve streaming ties without mutating simulation data.
+	return ay < by if ay != by else a < b
 
 
 func _draw() -> void:
@@ -362,7 +398,7 @@ func _draw_particles_and_motes() -> void:
 	var dot_tex: Texture2D = FX.dot
 	var glow_tex: Texture2D = FX.glow
 	if dot_tex != null and _p_active_count > 0:
-		for i in range(MAX_PARTICLES):
+		for i in _p_active_indices:
 			var life: float = _p_life[i]
 			if life <= 0.0:
 				continue
@@ -432,7 +468,11 @@ func draw_soldier(unit: Dictionary) -> void:
 	var is_friend: bool = is_friendly_team(unit.get("team", 0))
 
 	# Determine horizontal facing with hysteresis to prevent rapid flip jitter
-	var facing: float = _unit_facing.get(uid, 1.0 if is_friend else -1.0)
+	var cached_facing = _unit_facing.get(uid)
+	var facing: float = float(cached_facing) if cached_facing != null else (1.0 if is_friend else -1.0)
+	if cached_facing == null:
+		# Drawing can precede animate(), then the population can change again.
+		_membership_initialized = false
 	if "vel" in unit and absf(unit.vel.x) > 4.0:
 		facing = 1.0 if unit.vel.x >= 0.0 else -1.0
 	elif "facing" in unit and unit.facing != 0:
@@ -446,8 +486,8 @@ func draw_soldier(unit: Dictionary) -> void:
 		draw_texture_rect_region(atlas.texture, shadow_dest, shadow_reg, Color(1, 1, 1, 0.88))
 
 		# 2. Compute subtle attack lunge and hit recoil squash-and-stretch
-		var atk_prog: float = float(unit.get("attack_anim", unit.get("attack_progress", 0.0)))
-		var flash_t: float = float(unit.get("flash", unit.get("hit_flash", 0.0)))
+		var atk_prog: float = float(unit.attack_anim if "attack_anim" in unit else unit.get("attack_progress", 0.0))
+		var flash_t: float = float(unit.flash if "flash" in unit else unit.get("hit_flash", 0.0))
 		var tilt: float = 0.0
 		var scale_vec := Vector2.ONE
 		if atk_prog > 0.0:
@@ -508,7 +548,7 @@ func draw_atlas_rect(rectangle: Rect2, tint: Color) -> void:
 
 func draw_corpse(corpse: Dictionary, highlight: bool) -> void:
 	var pos: Vector2 = corpse.pos
-	var decay_ratio: float = clampf(float(corpse.get("ttl", corpse.get("timer", corpse.get("life", 7.0)))) / 14.0, 0.0, 1.0)
+	var decay_ratio: float = clampf(float(corpse.ttl if "ttl" in corpse else (corpse.timer if "timer" in corpse else corpse.get("life", 7.0))) / 14.0, 0.0, 1.0)
 	var ring_alpha: float = (0.55 if highlight else 0.28) * (0.35 + 0.65 * decay_ratio)
 	var ring_col := Color(GOLD.r, GOLD.g, GOLD.b, ring_alpha)
 
@@ -533,16 +573,16 @@ func draw_corpse(corpse: Dictionary, highlight: bool) -> void:
 
 
 func draw_attack(effect: Dictionary) -> void:
-	var kind: String = effect.get("kind", "archer" if effect.get("archer", false) else "sword")
-	var total_dur: float = maxf(0.001, float(effect.get("duration", effect.get("max_life", 0.16))))
-	var rem: float = float(effect.get("ttl", effect.get("timer", effect.get("life", total_dur * 0.5))))
+	var kind: String = effect.kind if "kind" in effect else ("archer" if effect.get("archer", false) else "sword")
+	var total_dur: float = maxf(0.001, float(effect.duration if "duration" in effect else effect.get("max_life", 0.16)))
+	var rem: float = float(effect.ttl if "ttl" in effect else (effect.timer if "timer" in effect else effect.get("life", total_dur * 0.5)))
 	var progress: float = clampf(1.0 - (rem / total_dur), 0.0, 1.0)
 	var is_friend: bool = is_friendly_team(effect.get("team", 0))
 	var tint: Color = FRIEND if is_friend else ENEMY
 
 	if kind == "archer" or kind == "arrow":
-		var from_p: Vector2 = effect.get("from", effect.get("pos", Vector2.ZERO))
-		var to_p: Vector2 = effect.get("to", effect.get("target", from_p + Vector2(60.0, 0.0)))
+		var from_p: Vector2 = effect.from if "from" in effect else effect.get("pos", Vector2.ZERO)
+		var to_p: Vector2 = effect.to if "to" in effect else effect.get("target", from_p + Vector2(60.0, 0.0))
 		var ground_p: Vector2 = from_p.lerp(to_p, progress)
 		var dist: float = from_p.distance_to(to_p)
 		var arc_h: float = clampf(dist * 0.16, 14.0, 44.0)
@@ -563,10 +603,10 @@ func draw_attack(effect: Dictionary) -> void:
 		else:
 			draw_line(prev_air, air_pos, tint.lightened(0.25), 2.5)
 	else:
-		var center: Vector2 = effect.get("pos", effect.get("to", Vector2.ZERO))
+		var center: Vector2 = effect.pos if "pos" in effect else effect.get("to", Vector2.ZERO)
 		var from_p: Vector2 = effect.get("from", center)
 		var to_p: Vector2 = effect.get("to", center + Vector2.RIGHT)
-		var angle: float = float(effect.get("angle", (to_p - from_p).angle()))
+		var angle: float = float(effect.angle if "angle" in effect else (to_p - from_p).angle())
 		var alpha: float = sin(progress * PI)
 		var slash_col := Color(tint.r, tint.g, tint.b, alpha * 0.95)
 		if FX.glow != null:

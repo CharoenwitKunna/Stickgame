@@ -246,8 +246,25 @@ func nearest_in_grid(unit: Dictionary, radius: float, target_loads: Dictionary =
 				var cell := Vector2i(x, y)
 				if cell == center:
 					continue
-				if not buckets.get(cell, EMPTY_BUCKET).is_empty():
-					search_cells_scratch.append(cell)
+				var bucket: Array = buckets.get(cell, EMPTY_BUCKET)
+				if bucket.is_empty():
+					continue
+				var dy: float = point.y - clampf(point.y, y * 128.0, (y + 1) * 128.0)
+				if dx * dx + dy * dy > best:
+					continue
+				for other in bucket:
+					if other.hp <= 0:
+						continue
+					var distance: float = point.distance_squared_to(other.pos)
+					if int(target_loads.get(other.id, 0)) >= MAX_ATTACKERS_PER_TARGET:
+						if distance < overflow_best or (distance == overflow_best and not overflow_enemy.is_empty() and search_order[other.id] < search_order[overflow_enemy.id]):
+							overflow_best = distance
+							overflow_enemy = other
+						continue
+					if distance < best or (distance == best and not result.is_empty() and search_order[other.id] < search_order[result.id]):
+						best = distance
+						result = other
+		return result
 	for cell in search_cells_scratch:
 		var dx: float = point.x - clampf(point.x, cell.x * 128.0, (cell.x + 1) * 128.0)
 		var dy: float = point.y - clampf(point.y, cell.y * 128.0, (cell.y + 1) * 128.0)
@@ -303,6 +320,7 @@ func tick(delta: float, direction: Vector2) -> void:
 	attack_loads[1].clear()
 	chase_loads[0].clear()
 	chase_loads[1].clear()
+	var is_commanded: bool = direction.length_squared() > 0 or has_target
 	for unit in units:
 		if unit.hp <= 0:
 			continue
@@ -315,8 +333,8 @@ func tick(delta: float, direction: Vector2) -> void:
 		var no_nearby_enemy := false
 		if unit.team == 0:
 			var formation_pos: Vector2 = clamp_point(anchor + slot_offset(int(unit.slot)))
-			var is_commanded: bool = (direction.length_squared() > 0 or has_target)
-			var anchor_dist: float = (unit.pos as Vector2).distance_to(anchor)
+			# Melee units marching freely never consult the anchor distance.
+			var anchor_dist: float = (unit.pos as Vector2).distance_to(anchor) if is_commanded or unit.kind == "archer" else 0.0
 			var enemy: Dictionary = {}
 			# Tethered engagement: seek foes when within army tether radius
 			if not is_commanded or anchor_dist < 200.0:
@@ -376,13 +394,15 @@ func tick(delta: float, direction: Vector2) -> void:
 		unit.pos = clamp_point((unit.pos as Vector2).move_toward(destination, speed * delta))
 		if use_search_grid:
 			move_search_entry(unit, old_position)
-		unit.moving = old_position.distance_to(unit.pos) > 0.3
+		# Reuse the float32-rounded distance; squaring changes boundary behavior.
+		var moved_distance: float = old_position.distance_to(unit.pos)
+		unit.moving = moved_distance > 0.3
 		if absf((unit.pos as Vector2).x - old_position.x) > 0.1:
 			unit.facing = signf((unit.pos as Vector2).x - old_position.x)
 		unit.step = float(unit.step) + delta * 11.0
 		# Reuse a proven empty chase radius only when this step cannot cross its
 		# gap to attack range. Large deltas still query; cooldown/timing is unchanged.
-		if unit.cooldown <= 0 and (not reuse_empty_chase_search or not no_nearby_enemy or old_position.distance_to(unit.pos) + float(stats.range) > CHASE_RADIUS):
+		if unit.cooldown <= 0 and (not reuse_empty_chase_search or not no_nearby_enemy or moved_distance + float(stats.range) > CHASE_RADIUS):
 			var load_table: Dictionary = attack_loads[int(unit.team)]
 			var target: Dictionary = nearest_available_enemy(unit, float(stats.range), load_table)
 			if target.is_empty():
@@ -434,7 +454,7 @@ func separate_units(delta: float) -> void:
 	for i in range(units.size()):
 		var a: Dictionary = units[i]
 		var cursor: int = i + 1
-		# Sparse cells need no padding; dense cells amortize repeated push queries.
+		# Sparse queries stay tight until an actual collision proves padding useful.
 		var padding: float = MAX_PAIR_PUSH if separation_buckets[separation_cells[i]].size() > 12 else 0.0
 		while cursor < units.size():
 			var query_origin: Vector2 = a.pos
@@ -448,6 +468,11 @@ func separate_units(delta: float) -> void:
 				if push_pair(a, b, delta):
 					move_separation_entry(i, a.pos)
 					move_separation_entry(j, b.pos)
+					if padding == 0.0 and a.pos != query_origin:
+						# Re-query once with padding; don't widen empty/no-contact cells.
+						padding = 6.0
+						shifted = true
+						break
 				if query_origin.distance_squared_to(a.pos) > padding * padding:
 					# Resume at the next array index, never revisiting an earlier pair.
 					shifted = true
@@ -464,10 +489,11 @@ func separation_candidates(point: Vector2, first: int, radius: float = MAX_SEPAR
 	candidates.clear()
 	var low := separation_cell(point - Vector2(radius, radius))
 	var high := separation_cell(point + Vector2(radius, radius))
+	var radius_squared := radius * radius
 	for x in range(low.x, high.x + 1):
 		for y in range(low.y, high.y + 1):
 			for index in separation_buckets.get(Vector2i(x, y), EMPTY_BUCKET):
-				if index >= first and point.distance_squared_to(units[index].pos) < radius * radius:
+				if index >= first and point.distance_squared_to(units[index].pos) < radius_squared:
 					candidates.append(index)
 	candidates.sort()
 	return candidates

@@ -16,6 +16,12 @@ var cache_visit := 0
 var landmark_signature: Array = []
 var terrain_builds := 0
 var view_rebuilds := 0
+var region_membership_rebuilds := 0
+var active_region_keys: Array[Vector2i] = []
+var next_region_keys: Array[Vector2i] = []
+var junction_seed := -1
+var h_junction_cache: Dictionary = {}
+var v_junction_cache: Dictionary = {}
 var metadata_snapshot: Dictionary = {}
 var metadata_seed := -1
 var metadata_low := Vector2i(2147483647, 2147483647)
@@ -90,9 +96,9 @@ func update_view(rectangle: Rect2) -> void:
 			canvas.hide()
 			canvas.queue_free()
 		terrain_regions.clear()
+		active_region_keys.clear()
 		cache_seed = seed_num
-	cache_visit += 1
-	var wanted: Dictionary = {}
+	next_region_keys.clear()
 	var low_reg := Vector2i(floori(view_rect.position.x / REGION_SIZE), floori(view_rect.position.y / REGION_SIZE))
 	var high_reg := Vector2i(floori(view_rect.end.x / REGION_SIZE), floori(view_rect.end.y / REGION_SIZE))
 	for rx in range(low_reg.x - 1, high_reg.x + 2):
@@ -106,7 +112,16 @@ func update_view(rectangle: Rect2) -> void:
 			var bounds := Rect2(origin, Vector2.ONE * REGION_SIZE).expand(dest_center).grow(72)
 			if not bounds.intersects(view_rect):
 				continue
-			wanted[key] = true
+			next_region_keys.append(key)
+	var membership_changed := next_region_keys != active_region_keys
+	if membership_changed or terrain_changed:
+		cache_visit += 1
+		# Refresh outgoing nodes' recency too: a long unchanged walk must not
+		# make the just-hidden regions look older than previously hidden ones.
+		for key in active_region_keys:
+			terrain_regions[key].visit = cache_visit - 1
+		for key in next_region_keys:
+			var dest_center: Vector2 = metadata_snapshot[key][0]
 			var canvas: RegionCanvas = terrain_regions.get(key)
 			if canvas == null:
 				canvas = RegionCanvas.new()
@@ -120,24 +135,28 @@ func update_view(rectangle: Rect2) -> void:
 				canvas.destination = dest_center
 				canvas.queue_redraw()
 			canvas.visit = cache_visit
-			canvas.show()
-	# Keep the original X/Y compositing order, including translucent road edges.
-	var order := 1
-	for key in wanted:
-		move_child(terrain_regions[key], order + 1) # viewport, then background
-		order += 1
-	for key in terrain_regions:
-		if not wanted.has(key):
-			terrain_regions[key].hide()
-	while terrain_regions.size() > TERRAIN_CACHE_LIMIT:
-		var oldest: Vector2i
-		var oldest_visit := 2147483647
+			if membership_changed:
+				canvas.show()
+	if membership_changed:
+		region_membership_rebuilds += 1
+		# Keep original X/Y alpha compositing; reuse the two key buffers.
+		var previous_keys := active_region_keys
+		active_region_keys = next_region_keys
+		next_region_keys = previous_keys
+		for order in range(active_region_keys.size()):
+			move_child(terrain_regions[active_region_keys[order]], order + 2)
 		for key in terrain_regions:
-			if not wanted.has(key) and terrain_regions[key].visit < oldest_visit:
-				oldest = key
-				oldest_visit = terrain_regions[key].visit
-		terrain_regions[oldest].queue_free()
-		terrain_regions.erase(oldest)
+			if not active_region_keys.has(key):
+				terrain_regions[key].hide()
+		while terrain_regions.size() > TERRAIN_CACHE_LIMIT:
+			var oldest: Vector2i
+			var oldest_visit := 2147483647
+			for key in terrain_regions:
+				if not active_region_keys.has(key) and terrain_regions[key].visit < oldest_visit:
+					oldest = key
+					oldest_visit = terrain_regions[key].visit
+			terrain_regions[oldest].queue_free()
+			terrain_regions.erase(oldest)
 	if landmarks_changed:
 		refresh_landmarks()
 
@@ -201,14 +220,34 @@ func draw_background(canvas: Node2D) -> void:
 			canvas.draw_texture_rect(viewport.get_texture(), Rect2(Vector2(x, y) * TILE, TILE), false)
 
 func get_h_junction_y(seed_num: int, rx: int, ry: int) -> float:
+	if junction_seed != seed_num or h_junction_cache.size() >= 256:
+		h_junction_cache.clear()
+		v_junction_cache.clear()
+		junction_seed = seed_num
+	var key := Vector2i(rx, ry)
+	var cached = h_junction_cache.get(key)
+	if cached != null:
+		return cached
 	var h_rng := RandomNumberGenerator.new()
 	h_rng.seed = hash("%d:%d:%d:h_edge" % [seed_num, rx, ry])
-	return (float(ry) + 0.35 + h_rng.randf() * 0.30) * REGION_SIZE
+	var value := (float(ry) + 0.35 + h_rng.randf() * 0.30) * REGION_SIZE
+	h_junction_cache[key] = value
+	return value
 
 func get_v_junction_x(seed_num: int, rx: int, ry: int) -> float:
+	if junction_seed != seed_num or v_junction_cache.size() >= 256:
+		h_junction_cache.clear()
+		v_junction_cache.clear()
+		junction_seed = seed_num
+	var key := Vector2i(rx, ry)
+	var cached = v_junction_cache.get(key)
+	if cached != null:
+		return cached
 	var v_rng := RandomNumberGenerator.new()
 	v_rng.seed = hash("%d:%d:%d:v_edge" % [seed_num, rx, ry])
-	return (float(rx) + 0.35 + v_rng.randf() * 0.30) * REGION_SIZE
+	var value := (float(rx) + 0.35 + v_rng.randf() * 0.30) * REGION_SIZE
+	v_junction_cache[key] = value
+	return value
 
 func draw_region_terrain_features(reg: Vector2i, target: Node2D = null) -> void:
 	var canvas: Node2D = self if target == null else target

@@ -40,5 +40,7 @@ if ($Mode -eq 'test') {
     & $engine.Source --path $PSScriptRoot --headless --script res://tests/test_performance_fixes.gd
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     & $engine.Source --path $PSScriptRoot --headless --script res://tests/test_hotpath_fixes.gd
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    & $engine.Source --path $PSScriptRoot --headless --script res://tests/test_vm_hotpaths.gd
 }
 exit $LASTEXITCODE

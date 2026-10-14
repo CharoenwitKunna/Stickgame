@@ -56,6 +56,9 @@ func tuf_and_stone_setup(rng: RandomNumberGenerator) -> void:
 			"flower": rng.randf() < 0.09
 		})
 
+	for tuft in tufts:
+		tuft.light_color = (tuft.color as Color).lightened(0.12)
+
 	for _i in range(60):
 		stones.append({
 			"pos": Vector2(rng.randf_range(48.0, 1232.0), rng.randf_range(32.0, 720.0)),
@@ -202,7 +205,7 @@ func _draw() -> void:
 		var sway: float = sin(wind_clock * 2.1 + p.x * 0.015 + tuft.phase) * 2.0
 		var c: Color = tuft.color
 		draw_line(p, p + Vector2(-s + sway, -h), c, 1.4, true)
-		draw_line(p + Vector2(1, 0), p + Vector2(s + sway * 1.1, -h * 0.86), c.lightened(0.12), 1.3, true)
+		draw_line(p + Vector2(1, 0), p + Vector2(s + sway * 1.1, -h * 0.86), tuft.light_color, 1.3, true)
 		if tuft.flower:
 			draw_circle(p + Vector2(s + sway * 1.1, -h * 0.86), 1.3, Color("ecd59b"))
 
