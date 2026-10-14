@@ -195,6 +195,7 @@ func clear_revive_progress() -> void:
 	revive_elapsed = 0.0
 	if is_instance_valid(visuals):
 		visuals.channel_active = false
+		visuals.channel_corpse = -1
 		visuals.channel_progress = 0.0
 		visuals.queue_redraw()
 
@@ -225,6 +226,7 @@ func update_revive(delta: float, point: Vector2) -> void:
 	else:
 		revive_elapsed += delta
 	visuals.channel_active = true
+	visuals.channel_corpse = revive_id
 	visuals.channel_point = corpse.pos
 	visuals.channel_progress = clampf(revive_elapsed / REVIVE_HOLD_TIME, 0, 1)
 	if revive_elapsed >= REVIVE_HOLD_TIME:

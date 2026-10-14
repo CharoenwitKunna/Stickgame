@@ -116,7 +116,7 @@ func run() -> void:
 	for i in range(80):
 		await process_frame
 		await RenderingServer.frame_post_draw
-	print("PROFILE LIVE rendering: total %.3f, soldiers %.3f, attacks %.3f, corpses %.3f, remainder %.3f ms/frame; animate %.3f ms/frame; particles %d effects %d" % [view.draw_us / float(view.frames) / 1000, view.soldier_us / float(view.frames) / 1000, view.attack_us / float(view.frames) / 1000, view.corpse_us / float(view.frames) / 1000, (view.draw_us - view.soldier_us - view.attack_us - view.corpse_us) / float(view.frames) / 1000, view.animate_us / float(view.frames) / 1000, view.particles.size(), model.effects.size()])
+	print("PROFILE LIVE rendering: total %.3f, soldiers %.3f, attacks %.3f, corpses %.3f, remainder %.3f ms/frame; animate %.3f ms/frame; particles %d effects %d" % [view.draw_us / float(view.frames) / 1000, view.soldier_us / float(view.frames) / 1000, view.attack_us / float(view.frames) / 1000, view.corpse_us / float(view.frames) / 1000, (view.draw_us - view.soldier_us - view.attack_us - view.corpse_us) / float(view.frames) / 1000, view.animate_us / float(view.frames) / 1000, view.active_particle_count(), model.effects.size()])
 	game.queue_free()
 	await process_frame
 	quit()

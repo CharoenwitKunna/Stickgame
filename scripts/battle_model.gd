@@ -26,6 +26,7 @@ var move_target := Vector2.ZERO
 var has_target := false
 var outcome := ""
 var next_id := 1
+var next_effect_id := 1
 var rng := RandomNumberGenerator.new()
 var time := 0.0
 var team_groups := [[], []]
@@ -54,6 +55,7 @@ func start_battle() -> void:
 	use_search_grid = false
 	corpses.clear()
 	effects.clear()
+	next_effect_id = 1
 	soul = 0
 	outcome = ""
 	time = 0.0
@@ -75,7 +77,7 @@ func start_battle() -> void:
 func spawn_unit(kind: String, team: int, position: Vector2) -> Dictionary:
 	var stats: Dictionary = STATS[kind]
 	var unit := {"id": next_id, "kind": kind, "team": team, "pos": position,
-		"hp": float(stats.hp), "cooldown": rng.randf_range(0.0, 0.4),
+		"hp": float(stats.hp), "max_hp": float(stats.hp), "cooldown": rng.randf_range(0.0, 0.4),
 		"wander": position, "wander_timer": 0.0, "flash": 0.0, "step": rng.randf_range(0, TAU), "moving": false,
 		"facing": 1.0 if team == 0 else -1.0, "attack": 0.0}
 	next_id += 1
@@ -252,7 +254,8 @@ func tick(delta: float, direction: Vector2) -> void:
 				damage *= 0.7
 			target.hp = float(target.hp) - damage
 			target.flash = 0.18
-			effects.append({"from": unit.pos, "to": target.pos, "ttl": 0.16, "archer": unit.kind == "archer", "team": unit.team})
+			effects.append({"visual_id": next_effect_id, "from": unit.pos, "to": target.pos, "ttl": 0.16, "archer": unit.kind == "archer", "team": unit.team})
+			next_effect_id += 1
 	use_team_groups = false
 	separate_units(delta)
 	collect_dead()
