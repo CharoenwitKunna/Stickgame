@@ -22,6 +22,7 @@ func capture(path: String) -> void:
 
 func run() -> void:
 	game = Main.instantiate()
+	game.endless_mode = false
 	game.save_path = "user://render_smoke_%d.json" % Time.get_ticks_usec()
 	root.add_child(game)
 	game.set_physics_process(false)
@@ -61,6 +62,33 @@ func run() -> void:
 	root.size = Vector2i(960, 600)
 	await capture("res://tests/preview_small.png")
 	var temporary_save: String = game.save_path
+	game.queue_free()
+	await process_frame
+	DirAccess.remove_absolute(temporary_save)
+	root.size = Vector2i(1280, 800)
+	game = Main.instantiate()
+	game.save_path = "user://render_endless_%d.json" % Time.get_ticks_usec()
+	root.add_child(game)
+	game.set_physics_process(false)
+	await capture("res://tests/preview_endless.png")
+	game.battle.anchor = Vector2(-3100, 2450)
+	game.battle.wilderness.update(game.battle)
+	for unit in game.battle.units:
+		if unit.team == 0:
+			unit.pos = game.battle.anchor + game.battle.slot_offset(unit.slot)
+	game.update_camera()
+	game.battle.corpses.append({"id": 888888, "kind": "shield", "pos": game.battle.anchor + Vector2(140, 40), "ttl": 14.0})
+	game.battle.soul = 10
+	game.revive_held = true
+	game.update_revive(0, game.battle.corpses.back().pos)
+	game.update_revive(0.4, game.battle.corpses.back().pos)
+	game.hovered = game.battle.corpses.size() - 1
+	game.visuals.hovered = game.hovered
+	game.visuals.animate(0.01)
+	await capture("res://tests/preview_endless_scrolled.png")
+	root.size = Vector2i(960, 600)
+	await capture("res://tests/preview_endless_small.png")
+	temporary_save = game.save_path
 	game.queue_free()
 	await process_frame
 	DirAccess.remove_absolute(temporary_save)

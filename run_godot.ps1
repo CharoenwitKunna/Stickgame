@@ -15,6 +15,7 @@ if (-not $engine) {
     exit 1
 }
 $arguments = @('--path', $PSScriptRoot)
+
 switch ($Mode) {
     'test' { $arguments += @('--headless', '--script', 'res://tests/test_game.gd') }
     'preview' { $arguments += @('--script', 'res://tests/render_smoke.gd') }
@@ -33,5 +34,7 @@ if ($Mode -eq 'test') {
     & $engine.Source --path $PSScriptRoot --headless --script res://tests/test_atlas.gd
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     & $engine.Source --path $PSScriptRoot --headless --script res://tests/test_allocation_reuse.gd
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    & $engine.Source --path $PSScriptRoot --headless --script res://tests/test_endless.gd
 }
 exit $LASTEXITCODE

@@ -42,6 +42,7 @@ func run() -> void:
 		quit()
 		return
 	var game = Main.instantiate()
+	game.endless_mode = false
 	game.save_path = "user://benchmark_unused.json"
 	root.add_child(game)
 	game.set_physics_process(false)

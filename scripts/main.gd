@@ -4,9 +4,14 @@ const Model = preload("res://scripts/battle_model.gd")
 const Store = preload("res://scripts/save_store.gd")
 const View = preload("res://scripts/battlefield_view.gd")
 const Scenery = preload("res://scripts/scenery.gd")
-const FRIEND := Color("8bd7b0")
-const ENEMY := Color("e58375")
-const GOLD := Color("e3c989")
+const WorldScenery = preload("res://scripts/world_scenery.gd")
+const FIELD := Rect2(0, 0, 1280, 738)
+@export var endless_mode := true
+var world: Node2D
+var revive_screen_pointer := Vector2.ZERO
+const FRIEND := Color("7bd4a8")
+const ENEMY := Color("ea7c6e")
+const GOLD := Color("e8cc88")
 const INK := Color("f1ecd9")
 const MUTED := Color("b8c8b7")
 const PANEL := Color("172622")
@@ -44,14 +49,48 @@ func _ready() -> void:
 	if not saved.is_empty():
 		battle.roster = saved.roster
 		battle.stage = saved.stage
-	scenery = Scenery.new()
-	add_child(scenery)
+	battle.endless = endless_mode
+	var world_parent: Node = self
+	if endless_mode:
+		var field_clip := Control.new()
+		field_clip.size = FIELD.size
+		field_clip.clip_contents = true
+		field_clip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		add_child(field_clip)
+		world = Node2D.new()
+		field_clip.add_child(world)
+		world_parent = world
+	scenery = WorldScenery.new() if endless_mode else Scenery.new()
+	if endless_mode:
+		scenery.wilderness = battle.wilderness
+		scenery.battle = battle
+	world_parent.add_child(scenery)
 	visuals = View.new()
 	visuals.battle = battle
-	add_child(visuals)
+	world_parent.add_child(visuals)
 	build_ui()
 	battle.start_battle()
+	update_camera()
 	refresh_ui()
+
+func screen_to_world(point: Vector2) -> Vector2:
+	return world.to_local(point) if world != null else point
+
+func world_to_screen(point: Vector2) -> Vector2:
+	return world.to_global(point) if world != null else point
+
+func inside_field(point: Vector2) -> bool:
+	return FIELD.has_point(world_to_screen(point)) if endless_mode else Model.ARENA.has_point(point)
+
+func update_camera() -> void:
+	if world == null:
+		return
+	world.position = FIELD.size * 0.5 - battle.anchor
+	var rectangle := Rect2(-world.position, FIELD.size)
+	visuals.visible_world = rectangle.grow(96)
+	scenery.update_view(rectangle)
+	visuals.queue_redraw()
+	revive_pointer = screen_to_world(revive_screen_pointer)
 
 func style_box(fill: Color, border: Color, radius: int = 8) -> StyleBoxFlat:
 	var style := StyleBoxFlat.new()
@@ -161,12 +200,14 @@ func _physics_process(delta: float) -> void:
 	if not paused and not reset_dialog.visible:
 		var previous: String = battle.outcome
 		battle.tick(delta, movement_input())
+		update_camera()
 		update_revive(delta, revive_pointer)
 		visuals.animate(delta)
 		if previous != battle.outcome:
 			persist()
 	status_time = maxf(0, status_time - delta)
-	hovered = battle.corpse_at(get_global_mouse_position())
+	var mouse_point := screen_to_world(get_global_mouse_position())
+	hovered = battle.corpse_at(mouse_point) if inside_field(mouse_point) else -1
 	if visuals.hovered != hovered:
 		visuals.hovered = hovered
 		visuals.queue_redraw()
@@ -178,16 +219,33 @@ func _notification(what: int) -> void:
 
 func _input(event: InputEvent) -> void:
 	if event is InputEventMouseMotion or event is InputEventMouseButton:
-		revive_pointer = get_global_transform_with_canvas().affine_inverse() * event.position
+		revive_screen_pointer = get_global_transform_with_canvas().affine_inverse() * event.position
+		revive_pointer = screen_to_world(revive_screen_pointer)
 	if event is InputEventMouseMotion and revive_held:
 		update_revive(0, revive_pointer)
 	# Releases must reach us even when a UI control consumes the event.
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_RIGHT and not event.pressed:
 		cancel_revive()
 
+var area_raise_chain := 0
+
+func nearest_affordable_corpse_index(point: Vector2, max_radius: float = 160.0) -> int:
+	var best_d2 := max_radius * max_radius
+	var best_idx := -1
+	for i in range(battle.corpses.size()):
+		var corpse: Dictionary = battle.corpses[i]
+		var cost: int = Model.STATS[corpse.kind].cost
+		if battle.soul >= cost:
+			var d2: float = point.distance_squared_to(corpse.pos)
+			if d2 < best_d2:
+				best_d2 = d2
+				best_idx = i
+	return best_idx
+
 func cancel_revive() -> void:
 	revive_held = false
 	rejected_revive_id = -1
+	area_raise_chain = 0
 	clear_revive_progress()
 
 func clear_revive_progress() -> void:
@@ -205,11 +263,19 @@ func update_revive(delta: float, point: Vector2) -> void:
 	if paused or reset_dialog.visible or battle.outcome == "defeat":
 		cancel_revive()
 		return
-	var index: int = battle.corpse_at(point) if Model.ARENA.has_point(point) else -1
+
+	var in_combat: bool = battle.is_combat_active()
+	var index: int = battle.corpse_at(point) if inside_field(point) else -1
+	# Outside of active combat, after raising a corpse, continue area-chaining nearby corpses
+	if not in_combat and index < 0 and area_raise_chain > 0 and inside_field(point):
+		index = nearest_affordable_corpse_index(point, 180.0)
+
 	if index < 0:
 		clear_revive_progress()
 		rejected_revive_id = -1
+		area_raise_chain = 0
 		return
+
 	var corpse: Dictionary = battle.corpses[index]
 	var cost: int = Model.STATS[corpse.kind].cost
 	if battle.soul < cost:
@@ -217,7 +283,9 @@ func update_revive(delta: float, point: Vector2) -> void:
 			show_message("Need %d Soul to raise this %s." % [cost, Model.STATS[corpse.kind].name])
 		rejected_revive_id = int(corpse.id)
 		clear_revive_progress()
+		area_raise_chain = 0
 		return
+
 	rejected_revive_id = -1
 	if revive_id != int(corpse.id):
 		clear_revive_progress()
@@ -225,19 +293,38 @@ func update_revive(delta: float, point: Vector2) -> void:
 		# A new target starts at zero; never inherit another corpse's hold time.
 	else:
 		revive_elapsed += delta
+
 	visuals.channel_active = true
 	visuals.channel_corpse = revive_id
 	visuals.channel_point = corpse.pos
-	visuals.channel_progress = clampf(revive_elapsed / REVIVE_HOLD_TIME, 0, 1)
-	if revive_elapsed >= REVIVE_HOLD_TIME:
+	var target_time: float = REVIVE_HOLD_TIME if (in_combat or area_raise_chain == 0) else 0.18
+	visuals.channel_progress = clampf(revive_elapsed / target_time, 0, 1)
+
+	if revive_elapsed >= target_time:
 		var before: int = battle.roster.size()
 		var position: Vector2 = corpse.pos
 		var kind: String = corpse.kind
-		show_message(battle.revive_corpse(revive_id))
+		var msg: String = battle.revive_corpse(revive_id)
+		show_message(msg)
 		clear_revive_progress()
 		if battle.roster.size() != before:
 			visuals.raise_at(position, kind)
 			persist()
+			area_raise_chain += 1
+
+		# After combat, continue holding to chain next nearby corpse
+		if not in_combat and revive_held:
+			var next_idx := nearest_affordable_corpse_index(point, 180.0)
+			if next_idx >= 0:
+				var next_corpse: Dictionary = battle.corpses[next_idx]
+				revive_id = int(next_corpse.id)
+				revive_elapsed = 0.0
+				visuals.channel_active = true
+				visuals.channel_corpse = revive_id
+				visuals.channel_point = next_corpse.pos
+				visuals.channel_progress = 0.0
+			else:
+				area_raise_chain = 0
 
 func _unhandled_input(event: InputEvent) -> void:
 	if reset_dialog.visible:
@@ -247,8 +334,8 @@ func _unhandled_input(event: InputEvent) -> void:
 			toggle_pause()
 			get_viewport().set_input_as_handled()
 	if event is InputEventMouseButton and event.pressed and not paused:
-		var point: Vector2 = get_global_transform_with_canvas().affine_inverse() * event.position
-		if not Model.ARENA.has_point(point):
+		var point := screen_to_world(get_global_transform_with_canvas().affine_inverse() * event.position)
+		if not inside_field(point):
 			return
 		if event.button_index == MOUSE_BUTTON_RIGHT:
 			revive_held = true
@@ -274,9 +361,10 @@ func toggle_pause() -> void:
 
 func continue_battle() -> void:
 	cancel_revive()
-	if battle.outcome == "victory":
+	if not endless_mode and battle.outcome == "victory":
 		battle.stage += 1
 	battle.start_battle()
+	update_camera()
 	visuals.reset_effects()
 	paused = false
 	pause_button.text = "Pause"
@@ -291,6 +379,7 @@ func reset_game() -> void:
 	battle.roster.assign(["sword", "sword", "sword", "shield"])
 	battle.stage = 1
 	battle.start_battle()
+	update_camera()
 	visuals.reset_effects()
 	paused = false
 	pause_button.text = "Pause"
@@ -318,12 +407,17 @@ func refresh_ui() -> void:
 	else:
 		banner.text = ""
 		result_help.text = ""
-	tooltip.visible = hovered >= 0 and not paused and battle.outcome != "defeat"
+	tooltip.visible = hovered >= 0 and hovered < battle.corpses.size() and not paused and battle.outcome != "defeat"
 	if tooltip.visible:
 		var corpse: Dictionary = battle.corpses[hovered]
 		var stats: Dictionary = Model.STATS[corpse.kind]
-		tooltip.position = Vector2(clampf(corpse.pos.x + 34, 45, 984), clampf(corpse.pos.y - 82, 118, 652))
-		tooltip_title.text = "Raise %s" % stats.name
+		var screen_point := world_to_screen(corpse.pos)
+		tooltip.position = Vector2(clampf(screen_point.x + 34, 45, 984), clampf(screen_point.y - 82, 12, 652))
+		var is_spec: bool = corpse.get("specialist", false)
+		var is_elite: bool = corpse.get("elite", false)
+		var prefix: String = "Veteran " if is_spec else ("Elite " if is_elite else "")
+		var suffix: String = " ★" if (is_spec or is_elite) else ""
+		tooltip_title.text = "Raise %s%s%s" % [prefix, stats.name, suffix]
 		if revive_id == int(corpse.id):
 			tooltip_help.text = "Raising %d%% · Release to cancel" % roundi(visuals.channel_progress * 100)
 		else:

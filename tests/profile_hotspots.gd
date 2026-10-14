@@ -18,7 +18,6 @@ class TimedModel extends "res://scripts/battle_model.gd":
 class TimedView extends "res://scripts/battlefield_view.gd":
 	var draw_us := 0
 	var soldier_us := 0
-	var ellipse_us := 0
 	var frames := 0
 	var attack_us := 0
 	var corpse_us := 0
@@ -44,10 +43,6 @@ class TimedView extends "res://scripts/battlefield_view.gd":
 		var begin := Time.get_ticks_usec()
 		super.draw_soldier(unit)
 		soldier_us += Time.get_ticks_usec() - begin
-	func ellipse(center: Vector2, radius: Vector2, color: Color) -> void:
-		var begin := Time.get_ticks_usec()
-		super.ellipse(center, radius, color)
-		ellipse_us += Time.get_ticks_usec() - begin
 
 func _initialize() -> void:
 	call_deferred("run")
@@ -74,6 +69,7 @@ func run() -> void:
 	total = Time.get_ticks_usec() - begin
 	print("PROFILE simulation 256 mixed units: total %.3f, nearest %.3f, separation %.3f ms/tick" % [total / 60000.0, large_model.nearest_us / 60000.0, large_model.separation_us / 60000.0])
 	var game = Main.instantiate()
+	game.endless_mode = false
 	game.save_path = "user://profile_unused.json"
 	root.add_child(game)
 	game.set_physics_process(false)
@@ -89,12 +85,11 @@ func run() -> void:
 		view.animate(1.0 / 60)
 		await process_frame
 		await RenderingServer.frame_post_draw
-	print("PROFILE drawing 128 mixed units: total %.3f, soldiers %.3f, ellipses %.3f ms/frame (inclusive; %d frames)" % [view.draw_us / float(view.frames) / 1000, view.soldier_us / float(view.frames) / 1000, view.ellipse_us / float(view.frames) / 1000, view.frames])
+	print("PROFILE drawing 128 mixed units: total %.3f, soldiers %.3f ms/frame (inclusive; %d frames)" % [view.draw_us / float(view.frames) / 1000, view.soldier_us / float(view.frames) / 1000, view.frames])
 	print("PROFILE engine draw calls: %d; objects: %d" % [Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME), Performance.get_monitor(Performance.OBJECT_COUNT)])
 	view.frames = 0
 	view.draw_us = 0
 	view.soldier_us = 0
-	view.ellipse_us = 0
 	view.battle = large_model
 	for i in range(20):
 		view.queue_redraw()

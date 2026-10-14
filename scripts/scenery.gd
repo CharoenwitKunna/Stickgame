@@ -5,6 +5,7 @@ const IMG_W := 420
 const IMG_H := 242
 const OUTLINE := Color("12201f")
 
+var tileable := false
 var terrain_image: Image
 var terrain_texture: ImageTexture
 var tufts: Array = []
@@ -29,20 +30,27 @@ func tuf_and_stone_setup(rng: RandomNumberGenerator) -> void:
 	shrubs.clear()
 	trees.clear()
 
-	for _i in range(650):
+	# 420 tufts arranged naturally with lower density in the central battle lane
+	for _i in range(450):
+		var y_pos: float = rng.randf_range(20.0, 750.0)
+		var center_dist: float = absf(y_pos - 400.0)
+		# Skip some tufts right in the center melee corridor for visual clarity
+		if center_dist < 110.0 and rng.randf() < 0.45:
+			continue
 		tufts.append({
-			"pos": Vector2(rng.randf_range(24.0, 1256.0), rng.randf_range(18.0, 748.0)),
-			"h": rng.randf_range(5.0, 10.5),
-			"spread": rng.randf_range(2.5, 5.2),
+			"pos": Vector2(rng.randf_range(24.0, 1256.0), y_pos),
+			"h": rng.randf_range(6.0, 11.5),
+			"spread": rng.randf_range(2.8, 5.5),
 			"phase": rng.randf() * TAU,
-			"color": Color("355245").lerp(Color("4c705c"), rng.randf())
+			"color": Color("284338").lerp(Color("3c5c4c"), rng.randf()),
+			"flower": rng.randf() < 0.09
 		})
 
 	for _i in range(60):
 		stones.append({
 			"pos": Vector2(rng.randf_range(48.0, 1232.0), rng.randf_range(32.0, 720.0)),
 			"radius": Vector2(rng.randf_range(4.5, 9.5), rng.randf_range(2.8, 5.5)),
-			"color": Color("586964").lerp(Color("73857e"), rng.randf())
+			"color": Color("526560").lerp(Color("6e807a"), rng.randf())
 		})
 
 	# Border shrubs and trees outside the main melee lane
@@ -65,48 +73,59 @@ func _process(delta: float) -> void:
 	queue_redraw()
 
 
+func terrain_noise(noise: FastNoiseLite, x: float, y: float) -> float:
+	if not tileable:
+		return noise.get_noise_2d(x, y) * 0.5 + 0.5
+	# Crossfade opposite edges so repeated world tiles have no rectangular seams.
+	var tx := x / float(IMG_W - 1)
+	var ty := y / float(IMG_H - 1)
+	var top := lerpf(noise.get_noise_2d(x, y), noise.get_noise_2d(x - (IMG_W - 1), y), tx)
+	var bottom := lerpf(noise.get_noise_2d(x, y - (IMG_H - 1)), noise.get_noise_2d(x - (IMG_W - 1), y - (IMG_H - 1)), tx)
+	return lerpf(top, bottom, ty) * 0.5 + 0.5
+
 func paint_terrain() -> void:
 	var noise := FastNoiseLite.new()
 	noise.seed = 591
-	noise.frequency = 0.017
+	noise.frequency = 0.016
 
 	var detail_noise := FastNoiseLite.new()
 	detail_noise.seed = 1907
-	detail_noise.frequency = 0.055
+	detail_noise.frequency = 0.052
 
 	terrain_image = Image.create(IMG_W, IMG_H, false, Image.FORMAT_RGBA8)
-	var deep_moss := Color("20352f")
-	var mid_sage := Color("29423a")
-	var light_glade := Color("335046")
-	var worn_path := Color("3b493f")
+	var deep_moss := Color("1a2d27")
+	var mid_sage := Color("233a32")
+	var light_glade := Color("2d463d")
+	var worn_path := Color("343f38")
 
 	var center := Vector2(IMG_W * 0.5, IMG_H * 0.48)
 	var inv_scale := Vector2(float(IMG_W) / VIEW_SIZE.x, float(IMG_H) / VIEW_SIZE.y)
 
 	for y in range(IMG_H):
 		for x in range(IMG_W):
-			var n: float = noise.get_noise_2d(float(x), float(y)) * 0.5 + 0.5
-			var d: float = detail_noise.get_noise_2d(float(x), float(y)) * 0.5 + 0.5
+			var n := terrain_noise(noise, float(x), float(y))
+			var d := terrain_noise(detail_noise, float(x), float(y))
 			var base_col: Color = deep_moss.lerp(mid_sage, clampf(n * 1.15, 0.0, 1.0))
-			if d > 0.62:
-				base_col = base_col.lerp(light_glade, (d - 0.62) * 0.85)
+			if d > 0.60:
+				base_col = base_col.lerp(light_glade, (d - 0.60) * 0.8)
 
-			# Subtle worn central battle lane & soft outer vignette
+			# Subtle worn central battle lane & soft cinematic outer vignette
 			var norm_dx: float = (float(x) - center.x) / (IMG_W * 0.46)
 			var norm_dy: float = (float(y) - center.y) / (IMG_H * 0.42)
 			var radial: float = norm_dx * norm_dx + norm_dy * norm_dy
-			var path_band: float = clampf(1.0 - absf(norm_dy) * 2.4, 0.0, 1.0)
-			base_col = base_col.lerp(worn_path, path_band * 0.22 * d)
-			if radial > 0.72:
-				base_col = base_col.darkened(clampf((radial - 0.72) * 0.35, 0.0, 0.22))
+			var path_band: float = clampf(1.0 - absf(norm_dy) * 2.3, 0.0, 1.0)
+			if not tileable:
+				base_col = base_col.lerp(worn_path, path_band * 0.22 * d)
+			if not tileable and radial > 0.65:
+				base_col = base_col.darkened(clampf((radial - 0.65) * 0.38, 0.0, 0.28))
 
 			terrain_image.set_pixel(x, y, base_col)
 
 	# Bake stone contact shadows directly into the terrain image to save per-frame draw calls
 	for stone in stones:
 		var sp: Vector2 = stone.pos * inv_scale
-		var sr: Vector2 = stone.radius * inv_scale * 1.35
-		_bake_soft_oval(sp + Vector2(0.0, 1.0), sr, Color(0.07, 0.12, 0.10, 0.38))
+		var sr: Vector2 = stone.radius * inv_scale * 1.3
+		_bake_soft_oval(sp + Vector2(0.5, 1.2), sr, Color(0.04, 0.07, 0.06, 0.48))
 
 	terrain_texture = ImageTexture.create_from_image(terrain_image)
 
@@ -134,7 +153,7 @@ func stamp_battle_scar(world_pos: Vector2, radius: float = 18.0) -> void:
 	if terrain_image == null:
 		return
 	var inv_scale := Vector2(float(IMG_W) / VIEW_SIZE.x, float(IMG_H) / VIEW_SIZE.y)
-	_bake_soft_oval(world_pos * inv_scale, Vector2(radius, radius * 0.65) * inv_scale, Color(0.08, 0.13, 0.11, 0.22))
+	_bake_soft_oval(world_pos * inv_scale, Vector2(radius, radius * 0.65) * inv_scale, Color(0.05, 0.09, 0.07, 0.28))
 	_terrain_dirty = true
 
 
@@ -154,17 +173,22 @@ func _draw() -> void:
 		var sr: Vector2 = stone.radius
 		ellipse(sp, sr + Vector2(1.2, 1.2), OUTLINE)
 		ellipse(sp, sr, stone.color)
-		ellipse(sp - Vector2(sr.x * 0.22, sr.y * 0.25), sr * 0.45, stone.color.lightened(0.16))
+		# Shadowed underbelly
+		ellipse(sp + Vector2(sr.x * 0.15, sr.y * 0.2), sr * 0.75, stone.color.darkened(0.22))
+		# Sunlit top-left glint
+		ellipse(sp - Vector2(sr.x * 0.25, sr.y * 0.25), sr * 0.42, stone.color.lightened(0.24))
 
-	# Wind-animated grass tufts (batched 2-segment V-strokes)
+	# Wind-animated grass tufts (cleaner silhouette & softer visual noise)
 	for tuft in tufts:
 		var p: Vector2 = tuft.pos
 		var h: float = tuft.h
 		var s: float = tuft.spread
-		var sway: float = sin(wind_clock * 2.1 + p.x * 0.015 + tuft.phase) * 2.2
+		var sway: float = sin(wind_clock * 2.1 + p.x * 0.015 + tuft.phase) * 2.0
 		var c: Color = tuft.color
-		draw_line(p, p + Vector2(-s + sway, -h), c, 1.35)
-		draw_line(p, p + Vector2(s + sway * 1.1, -h * 0.88), c.lightened(0.08), 1.35)
+		draw_line(p, p + Vector2(-s + sway, -h), c, 1.4, true)
+		draw_line(p + Vector2(1, 0), p + Vector2(s + sway * 1.1, -h * 0.86), c.lightened(0.12), 1.3, true)
+		if tuft.flower:
+			draw_circle(p + Vector2(s + sway * 1.1, -h * 0.86), 1.3, Color("ecd59b"))
 
 	for shrub_pos in shrubs:
 		draw_shrub(shrub_pos)
@@ -175,19 +199,27 @@ func _draw() -> void:
 
 func draw_shrub(p: Vector2) -> void:
 	var sway: float = sin(wind_clock * 1.6 + p.x * 0.02) * 1.2
-	ellipse(p + Vector2(0, 6), Vector2(18, 7), Color(0, 0, 0, 0.24))
+	ellipse(p + Vector2(1, 8), Vector2(20, 8), Color(0.02, 0.05, 0.04, 0.35))
 	ellipse(p + Vector2(sway, 0), Vector2(17, 13), OUTLINE)
-	ellipse(p + Vector2(sway, 0), Vector2(15, 11), Color("2b473d"))
-	ellipse(p + Vector2(-4 + sway, -3), Vector2(9, 7), Color("3c6152"))
+	ellipse(p + Vector2(sway, 0), Vector2(15, 11), Color("263e34"))
+	ellipse(p + Vector2(-5 + sway, -3), Vector2(10, 8), Color("345447"))
+	ellipse(p + Vector2(4 + sway, 1), Vector2(9, 7), Color("2e4c40"))
+	ellipse(p + Vector2(-6 + sway, -4), Vector2(5, 4), Color("456d5c"))
 
 
 func draw_tree(p: Vector2) -> void:
 	var sway: float = sin(wind_clock * 1.3 + p.y * 0.02) * 1.8
-	ellipse(p + Vector2(0, 12), Vector2(26, 10), Color(0, 0, 0, 0.28))
+	# Ground contact shadow
+	ellipse(p + Vector2(2, 14), Vector2(28, 11), Color(0.02, 0.05, 0.04, 0.40))
+	# Trunk with highlight edge
 	draw_rect(Rect2(p + Vector2(-5, -14), Vector2(10, 26)), OUTLINE)
-	draw_rect(Rect2(p + Vector2(-3.5, -14), Vector2(7, 24)), Color("4a3b31"))
+	draw_rect(Rect2(p + Vector2(-3.5, -14), Vector2(7, 24)), Color("3e3027"))
+	draw_line(p + Vector2(-2, -14), p + Vector2(-2, 10), Color("5c493c"), 1.2, true)
+	# Layered foliage crown
 	var crown := p + Vector2(sway, -26)
-	ellipse(crown, Vector2(26, 21), OUTLINE)
-	ellipse(crown, Vector2(24, 19), Color("264037"))
-	ellipse(crown + Vector2(-5, -5), Vector2(15, 12), Color("37594b"))
-	ellipse(crown + Vector2(6, -2), Vector2(12, 10), Color("466e5d"))
+	ellipse(crown, Vector2(27, 22), OUTLINE)
+	ellipse(crown, Vector2(25, 20), Color("22382f"))
+	ellipse(crown + Vector2(-6, -6), Vector2(16, 13), Color("315042"))
+	ellipse(crown + Vector2(7, -3), Vector2(13, 11), Color("294337"))
+	ellipse(crown + Vector2(-7, -8), Vector2(9, 7), Color("426a58"))
+

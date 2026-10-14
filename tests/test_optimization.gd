@@ -4,6 +4,8 @@ const Model = preload("res://scripts/battle_model.gd")
 
 # Independent linear targeting and pairwise circle-collision reference; shares game rules only.
 class Reference extends "res://scripts/battle_model.gd":
+	func _init() -> void:
+		reuse_empty_chase_search = false
 	func nearest_enemy(unit: Dictionary, radius: float, target_loads: Dictionary = {}) -> Dictionary:
 		var result: Dictionary = {}
 		var best := radius * radius

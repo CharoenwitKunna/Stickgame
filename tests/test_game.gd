@@ -111,6 +111,7 @@ func run() -> void:
 	DirAccess.remove_absolute(test_path)
 	# Boot real scene and run several render/physics frames without touching real saves.
 	var scene: Node2D = MainScript.new()
+	scene.endless_mode = false
 	scene.save_path = test_path
 	root.add_child(scene)
 	check(scene.get_node_or_null(".") != null, "Main scene boots with battlefield")

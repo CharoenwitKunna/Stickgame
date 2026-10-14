@@ -1,6 +1,6 @@
 # Stickgame
 
-Playable Godot 4 prototype. Move your stickman army into roaming enemies, let the units fight, then raise fallen enemies into permanent recruits.
+Playable Godot 4 exploration game. Walk your stickman army through an endless scrolling woodland, fight randomly scattered enemy bands, then raise fallen enemies into permanent recruits. Small patrols, medium groups, and large armies contain mixed swordsmen, archers, and shieldbearers.
 
 ## Play
 
@@ -17,11 +17,13 @@ To edit the game, import `project.godot` in Godot 4 and press **F5**. Tested wit
 
 Your army is green; enemies are red. Attacks are automatic. Enemies roam until they spot your army, then approach to attack.
 
-Each enemy kill earns 2 Soul. Swordsmen cost 2, archers 3, and shieldbearers 4. When attacks are ready, units favor the nearest enemy with fewer than two allies assigned that tick; if every nearby target has a pair, focus fire is allowed. Each enemy independently pursues a nearby target, also spreading across the closest available opponents. Circle-body collisions give swordsmen, archers, and heavier shieldbearers different spacing and push weight. Corpse rings last 14 seconds. Hover a corpse to see its cost and your available Soul. Holding fills a gold ring and gathers orbiting Soul lights; completion releases a rising spirit, mint/gold sparks, and expanding rings. Soul is spent only on completion. Pause, focus loss, leaving the window, and opening New game cancel the hold. There is no top HUD; the battlefield fills that space. Pause and New game remain in the bottom bar. After victory, corpses stop expiring so you can recruit before continuing.
+Each enemy kill earns 2 Soul. Swordsmen cost 2, archers 3, and shieldbearers 4. When attacks are ready, units favor the nearest enemy with fewer than two allies assigned that tick; if every nearby target has a pair, focus fire is allowed. Each enemy independently pursues a nearby target, also spreading across the closest available opponents. Circle-body collisions give swordsmen, archers, and heavier shieldbearers different spacing and push weight. Corpse rings last 14 seconds. Hover a corpse to see its cost and your available Soul. Holding fills a gold ring and gathers orbiting Soul lights; completion releases a rising spirit, mint/gold sparks, and expanding rings. Soul is spent only on completion. Pause, focus loss, leaving the window, and opening New game cancel the hold. There is no top HUD; the battlefield fills that space. Pause and New game remain in the bottom bar. The camera follows your army, and movement/revival clicks are mapped into world space. Corpses expire after 14 seconds even when you clear a group; there is no victory screen or Next battle in exploration.
 
-Recruits are saved immediately. Fallen friendly units recover for the next battle, including after defeat. Soul resets between battles. Stage 2 introduces archers; stage 3 introduces shieldbearers. Later stages increase the enemy count based on stage and army size.
+Recruits are saved immediately. Soul carries between encounters throughout an expedition. If your army falls, Retry restores every permanent recruit and starts a fresh expedition with zero Soul. All three enemy types can appear from the start. Survivors keep their formation slots when another soldier dies; new recruits fill vacant slots without reshuffling the army.
 
-Saves use Godot's `user://army.json` (outside the project folder). Closing during combat restarts the saved stage next time; it does not restore positions or health. **New game** asks for confirmation before replacing progress.
+Exploration generates 1–2 enemy groups per 1200 × 1200 region: small bands have 2–5 units, medium groups 6–10, and large armies 14–24. Only the surrounding nine regions simulate. Distant enemies sleep; returning to recently visited regions preserves their health and casualties. A 64-region cache bounds world storage: very distant evicted regions repopulate when revisited. Nearby pursuers remain active when their original region unloads. Terrain repeats a shared, seam-matched woodland texture; decoration remains nonblocking.
+
+Saves use Godot's `user://army.json` (outside the project folder). Closing restarts exploration with your saved army; world locations, enemy state, health, and Soul are session-only. Older campaign saves still load their armies. **New game** asks for confirmation before replacing progress.
 
 ## Tests
 
@@ -34,11 +36,13 @@ Saves use Godot's `user://army.json` (outside the project folder). Closing durin
 .\run_godot.ps1 -Mode profile
 ```
 
-The gameplay suite runs 67 checks covering movement, combat, hold-to-revive, persistence, victory/defeat, input routing, cancellation, overlapping/expired corpses, bounded effects, and corrupt saves. It also runs 3,745 exact simulation comparisons between the spatial-grid simulation and independent linear-targeting/pairwise-collision references, including casualties, recruitment, dense piles, cell boundaries, equal-distance ties, and varied frame times. Combat checks verify that a four-archer volley splits across two nearby targets and that mixed unit bodies physically separate. Atlas tests validate all 432 poses, complete tile borders, 3,600 animation selections, planted feet, knee geometry, seamless walk looping, and attack recovery. Allocation-reuse tests add 610 checks covering actual buffer reuse, stale candidates, deaths, ordering, grid-threshold transitions, stage resets, and recruitment. Tests use temporary save files and leave your army untouched. The preview test captures combat, revival channel/completion, pause, victory, defeat, and a 960 × 600 window in `tests/preview*.png`; smoke launches the normal game and closes after 180 frames.
+The gameplay suite runs 67 checks covering movement, combat, hold-to-revive, persistence, victory/defeat, input routing, cancellation, overlapping/expired corpses, bounded effects, and corrupt saves. It also runs 3,745 exact simulation comparisons between the spatial-grid simulation and independent linear-targeting/pairwise-collision references, including casualties, recruitment, dense piles, cell boundaries, equal-distance ties, and varied frame times. Combat checks verify that a four-archer volley splits across two nearby targets and that mixed unit bodies physically separate. Atlas tests validate all 432 poses, complete tile borders, 3,600 animation selections, planted feet, knee geometry, seamless walk looping, and attack recovery. Allocation-reuse tests add 610 checks covering actual buffer reuse, stale candidates, deaths, ordering, grid-threshold transitions, stage resets, and recruitment. Endless-world tests additionally cover stable formation slots, mixed-size groups, 100-region exploration, bounded storage, persistent casualties, pursuing enemies, negative coordinates, 80 exact streamed simulation comparisons, scrolling input/revival, terrain seams, visual-cache cleanup, and defeat/retry. Tests use temporary save files and leave your army untouched. The preview test captures combat, revival channel/completion, pause, victory, defeat, a 960 × 600 window, and endless exploration before/after scrolling in `tests/preview*.png`; smoke launches the normal game and closes after 180 frames.
 
 ## Files
 
-- `scripts/battle_model.gd`: movement, nearest-target assignment, combat, circle-body collisions, corpses, recruitment.
+- `scripts/battle_model.gd`: stable formation slots, movement, nearest-target assignment, combat, circle-body collisions, corpses, recruitment.
+- `scripts/wilderness.gd`: seeded enemy groups, region streaming, sleeping enemies, bounded revisit cache.
+- `scripts/world_scenery.gd`: one-time scenery baking and shared world tiles.
 - `scripts/main.gd`: input, bottom controls, tooltips, and battle flow.
 - `scripts/scenery.gd`: static terrain and foliage, retained on a separate canvas.
 - `scripts/battlefield_view.gd`: sprite rendering, health bars, corpses, and particles.

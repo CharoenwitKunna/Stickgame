@@ -20,17 +20,27 @@ func summarize(label: String, samples: Array[float]) -> void:
 func run() -> void:
 	Engine.max_fps = 60
 	var game := TimedMain.new()
-	game.save_path = "user://live_benchmark_unused.json"
+	var exploration := "--endless" in OS.get_cmdline_user_args()
+	game.endless_mode = exploration
+	game.save_path = "user://live_benchmark_%d.json" % Time.get_ticks_usec()
 	root.add_child(game)
-	for count in [10, 128, 256]:
-		game.battle.start_battle()
-		game.battle.units.clear()
-		game.visuals.reset_effects()
-		game.battle.anchor = Vector2(600, 400)
+	for count in ([4, 128, 256] if exploration else [10, 128, 256]):
 		game.battle.rng.seed = 731
-		for i in range(count):
-			var unit: Dictionary = game.battle.spawn_unit(["sword", "archer", "shield"][i % 3], i % 2, Vector2(65 + (i % 20) * 57, 220 + (i / 20) * 34))
+		if exploration:
+			game.battle.roster.clear()
+			for i in range(count):
+				game.battle.roster.append(["sword", "archer", "shield"][i % 3])
+		game.battle.start_battle()
+		game.visuals.reset_effects()
+		if not exploration:
+			game.battle.units.clear()
+			game.battle.anchor = Vector2(600, 400)
+			for i in range(count):
+				game.battle.spawn_unit(["sword", "archer", "shield"][i % 3], i % 2, Vector2(65 + (i % 20) * 57, 220 + (i / 20) * 34))
+		for unit in game.battle.units:
 			unit.hp = 1000000.0
+		game.update_camera()
+		var label := "%d recruits/%d active exploration units" % [count, game.battle.units.size()] if exploration else "%d mixed units" % count
 		var frame_times: Array[float] = []
 		var last := Time.get_ticks_usec()
 		for frame in range(140):
@@ -42,8 +52,8 @@ func run() -> void:
 			if frame >= 20:
 				frame_times.append((now - last) / 1000.0)
 			last = now
-		summarize("%d mixed units frame interval (60 FPS cap)" % count, frame_times)
-		summarize("%d mixed units scene physics CPU per tick" % count, game.physics_samples)
+		summarize(label + " frame interval (60 FPS cap)", frame_times)
+		summarize(label + " scene physics CPU per tick", game.physics_samples)
 	game.queue_free()
 	await process_frame
 	quit()

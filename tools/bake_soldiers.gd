@@ -21,11 +21,12 @@ class Tiles extends "res://scripts/soldier_painter.gd":
 				draw_soldier(unit)
 		draw_shadow(Layout.region(Layout.SHADOW).position + Layout.ORIGIN)
 		var p: Vector2 = Layout.region(Layout.CORPSE).position + Layout.ORIGIN
-		ellipse(p + Vector2(2, 4), Vector2(24, 6), Color(0.04, 0.08, 0.06, 0.3))
-		limb(PackedVector2Array([p + Vector2(-9, -3), p + Vector2(7, -1), p + Vector2(18, 6)]), Color("8f9b81"), 3)
-		limb(PackedVector2Array([p + Vector2(7, -1), p + Vector2(18, -6)]), Color("8f9b81"), 3)
-		draw_circle(p + Vector2(-15, -5), 5, OUTLINE, true, -1, true)
-		draw_circle(p + Vector2(-15, -5), 3.5, Color("9da38a"), true, -1, true)
+		ellipse(p + Vector2(2, 2), Vector2(22, 5.5), Color(0.02, 0.05, 0.04, 0.45))
+		ellipse(p + Vector2(2, 2), Vector2(28, 8.0), Color(0.02, 0.05, 0.04, 0.20))
+		limb(PackedVector2Array([p + Vector2(-9, -3), p + Vector2(7, -1), p + Vector2(18, 5)]), Color("94a38f"), 3.2)
+		limb(PackedVector2Array([p + Vector2(7, -1), p + Vector2(18, -5)]), Color("82917d"), 3.0)
+		draw_circle(p + Vector2(-15, -5), 5.5, OUTLINE, true, -1, true)
+		draw_circle(p + Vector2(-15, -5), 3.8, Color("9dae98"), true, -1, true)
 		draw_circle(Layout.region(Layout.COST).position + Layout.FX_ORIGIN, 10, OUTLINE, true, -1, true)
 		draw_arc(Layout.region(Layout.RING).position + Layout.FX_ORIGIN, 25, 0, TAU, 48, Color.WHITE, 1.5, true)
 		for step in range(1, Layout.TIMER_STEPS + 1):

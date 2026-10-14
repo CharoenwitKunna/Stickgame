@@ -1,5 +1,10 @@
 # Stickgame — Game Plan
 
+## Current shipped direction: endless exploration
+The normal game now uses a scrolling, unbounded woodland instead of campaign battles. Random small, medium, and large mixed enemy armies are generated as the player explores. Soul carries between encounters; clearing a group never ends the expedition. Defeat allows retry with every permanent recruit restored. Survivor formation slots stay stable after casualties. The region cache retains recent enemy damage/deaths and replenishes very distant evicted regions. Saves retain the army, not the current world or Soul. See README.md for controls, streaming limits, and tests.
+
+The campaign plan below records the original prototype direction. Its stage/victory rules apply only to legacy test fixtures, not the normal game.
+
 ## Game pitch
 A 2D stickman army battle game. You control your army's movement while the enemy army wanders on its own. Units attack automatically, and you can hold right mouse over fallen enemies to raise them as permanent members of your army.
 

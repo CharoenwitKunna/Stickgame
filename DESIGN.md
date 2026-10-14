@@ -1,6 +1,6 @@
 # Stickgame visual direction
 
-Desktop Godot battlefield, 1280 × 800 logical canvas. Keep movement, recruitment costs, and progression rules; revival now requires a 0.7-second right-mouse hold.
+Desktop Godot battlefield, 1280 × 800 logical canvas. Preserve movement and recruitment costs; revival requires a 0.7-second right-mouse hold. The normal game is now endless exploration: the camera follows the army through a scrolling woodland, with random mixed-size enemy bands and no campaign victory transitions.
 
 The field is the focus: a painted woodland clearing, worn earth, grass, perimeter trees, and grounded stickman silhouettes. Preserve the green-friendly/red-enemy distinction. Remove the debug grid and make weapons and animation carry unit identity.
 
@@ -26,7 +26,9 @@ The field is the focus: a painted woodland clearing, worn earth, grass, perimete
 - Hold right mouse inside the existing corpse hit radius for 0.7 seconds. Show a filling gold ring, orbiting Soul lights, and percentage feedback. Release, pointer exit, pause, focus loss, or target changes cancel progress without charging Soul.
 - Celebrate successful recruitment with a rising spectral soldier, mint/gold sparks, expanding rings, and soft light. Add brief team-colored impact pulses and subtle drifting motes; no camera shake or full-screen flashes.
 - Effects use shared textures and bounded counts: 240 particles, 32 impacts, 24 revival bursts, 18 motes. Group impact drawing by texture; keep the battlefield readable.
-- Victory/defeat uses a compact in-arena result panel that leaves corpses accessible.
+- Exploration has no victory overlay or Next battle button. Defeat uses a compact in-arena result panel with Retry; permanent recruits recover.
+- The army keeps stable survivor formation slots. Death must not reshuffle the remaining line; new recruits reuse vacancies.
+- World terrain shares one baked scenery texture with seam-matched edges. Only visible soldiers draw; nearby world regions simulate, and distant enemies sleep. Scrolling affects the battlefield, never the bottom bar or corpse tooltips.
 - All button states include visible keyboard focus. Text and controls stay legible at the logical viewport and when downscaled to 960 × 600.
 
 ## Assets

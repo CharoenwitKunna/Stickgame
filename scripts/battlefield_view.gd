@@ -4,11 +4,11 @@ const Model = preload("res://scripts/battle_model.gd")
 const Atlas = preload("res://scripts/soldier_atlas.gd")
 const FX = preload("res://scripts/effect_textures.gd")
 
-const FRIEND := Color("8bd7b0")
-const ENEMY := Color("e58375")
-const GOLD := Color("e3c989")
-const OUTLINE := Color("142623")
-const GHOST_DAMAGE := Color(1.0, 0.92, 0.85, 0.85)
+const FRIEND := Color("7bd4a8")
+const ENEMY := Color("ea7c6e")
+const GOLD := Color("e8cc88")
+const OUTLINE := Color("12221e")
+const GHOST_DAMAGE := Color(1.0, 0.94, 0.88, 0.88)
 
 const MAX_PARTICLES := 240
 const MAX_PULSES := 32
@@ -19,6 +19,7 @@ var battle: RefCounted
 var atlas: RefCounted
 var fx: RefCounted
 var clock: float = 0.0
+var visible_world := Rect2(0, 0, 1280, 738)
 
 # Revive / hover state read or set by main.gd
 var hovered_corpse: int = -1
@@ -34,8 +35,9 @@ var channel_progress: float = 0.0
 var move_marker_pos: Vector2 = Vector2.ZERO
 var move_marker_timer: float = 0.0
 
-# Persistent Y-sort array to avoid per-frame .duplicate() and lambda allocations
+# Reused visible list and stable tie ranks; native O(N log N) sorting.
 var _ordered_units: Array = []
+var _draw_order: Dictionary = {}
 
 # Trailing HP ghost bar state & facing cache (keyed by unit.id)
 var _hp_ghost: Dictionary = {}
@@ -218,18 +220,22 @@ func animate(delta: float) -> void:
 			var tint: Color = FRIEND if is_friendly_team(effect.get("team", 0)) else ENEMY
 			spawn_impact(effect.get("to", Vector2.ZERO), tint, 0.8 if effect.get("archer", false) else 1.0)
 
-	# Update ambient floating motes
+	# Motes stay in the camera's world-space rectangle as exploration scrolls.
 	for mote in motes:
+		if not visible_world.has_point(mote.pos):
+			mote.pos = visible_world.position + Vector2(randf_range(0, visible_world.size.x), randf_range(0, visible_world.size.y))
 		mote.pos.y -= mote.speed * delta
 		mote.pos.x += sin(clock * 1.5 + mote.phase) * 9.0 * delta
-		if mote.pos.y < 12.0:
-			mote.pos.y = 715.0
-			mote.pos.x = randf_range(60.0, 1220.0)
+		if mote.pos.y < visible_world.position.y:
+			mote.pos.y = visible_world.end.y
+			mote.pos.x = randf_range(visible_world.position.x, visible_world.end.x)
 
 	# Decay trailing HP ghost values smoothly
 	if battle != null and "units" in battle:
+		var live_ids: Dictionary = {}
 		for unit in battle.units:
 			var uid: int = unit.get("id", -1)
+			live_ids[uid] = true
 			var max_hp: float = unit_max_hp(unit)
 			var ratio: float = clampf(float(unit.get("hp", max_hp)) / max_hp, 0.0, 1.0)
 			var prev_ghost: float = _hp_ghost.get(uid, ratio)
@@ -237,6 +243,10 @@ func animate(delta: float) -> void:
 				_hp_ghost[uid] = move_toward(prev_ghost, ratio, delta * 0.95)
 			else:
 				_hp_ghost[uid] = ratio
+		for uid in _hp_ghost.keys():
+			if not live_ids.has(uid):
+				_hp_ghost.erase(uid)
+				_unit_facing.erase(uid)
 
 	queue_redraw()
 
@@ -261,19 +271,20 @@ func unit_max_hp(unit: Dictionary) -> float:
 
 func _sort_units_by_y() -> void:
 	var src: Array = battle.units
-	var count: int = src.size()
-	_ordered_units.resize(count)
-	for i in range(count):
-		_ordered_units[i] = src[i]
-	# In-place insertion sort: O(N) on nearly-sorted frame-to-frame Y positions
-	for i in range(1, count):
-		var item: Dictionary = _ordered_units[i]
-		var item_y: float = item.pos.y
-		var j: int = i - 1
-		while j >= 0 and _ordered_units[j].pos.y > item_y:
-			_ordered_units[j + 1] = _ordered_units[j]
-			j -= 1
-		_ordered_units[j + 1] = item
+	_ordered_units.clear()
+	_draw_order.clear()
+	for unit in src:
+		if visible_world.has_point(unit.pos):
+			_draw_order[unit.id] = _ordered_units.size()
+			_ordered_units.append(unit)
+	_ordered_units.sort_custom(_compare_unit_y)
+
+
+func _compare_unit_y(a: Dictionary, b: Dictionary) -> bool:
+	var ay: float = a.pos.y
+	var by: float = b.pos.y
+	# Explicit source-order ties preserve the original stable insertion sort.
+	return ay < by if ay != by else _draw_order[a.id] < _draw_order[b.id]
 
 
 func _draw() -> void:
@@ -295,10 +306,12 @@ func _draw() -> void:
 
 	# 3. Corpses & decay rings
 	if "corpses" in battle:
-		for corpse in battle.corpses:
+		for index in range(battle.corpses.size()):
+			var corpse: Dictionary = battle.corpses[index]
 			var cid: int = corpse.get("id", -1)
-			var is_highlighted: bool = (cid == hovered_corpse or cid == channel_corpse)
-			draw_corpse(corpse, is_highlighted)
+			var is_highlighted: bool = (index == hovered_corpse or cid == channel_corpse)
+			if visible_world.has_point(corpse.pos):
+				draw_corpse(corpse, is_highlighted)
 
 	# 4. Active revive channeling aura (underneath soldiers)
 	draw_channel()
@@ -416,7 +429,7 @@ func draw_soldier(unit: Dictionary) -> void:
 	if atlas != null and atlas.get("texture") != null:
 		var shadow_reg: Rect2 = Atlas.region(Atlas.SHADOW)
 		var shadow_dest := Rect2(pos - Atlas.ORIGIN, Vector2(Atlas.TILE, Atlas.TILE))
-		draw_texture_rect_region(atlas.texture, shadow_dest, shadow_reg, Color(1, 1, 1, 0.78))
+		draw_texture_rect_region(atlas.texture, shadow_dest, shadow_reg, Color(1, 1, 1, 0.88))
 
 		# 2. Compute subtle attack lunge and hit recoil squash-and-stretch
 		var atk_prog: float = float(unit.get("attack_anim", unit.get("attack_progress", 0.0)))
@@ -425,12 +438,12 @@ func draw_soldier(unit: Dictionary) -> void:
 		var scale_vec := Vector2.ONE
 		if atk_prog > 0.0:
 			var swing_wave: float = sin(atk_prog * PI)
-			tilt = 0.11 * swing_wave * facing
-			scale_vec = Vector2(1.0 + 0.06 * swing_wave, 1.0 - 0.04 * swing_wave)
+			tilt = 0.12 * swing_wave * facing
+			scale_vec = Vector2(1.0 + 0.08 * swing_wave, 1.0 - 0.05 * swing_wave)
 		if flash_t > 0.0:
 			var hit_wave: float = clampf(flash_t * 5.0, 0.0, 1.0)
-			tilt -= 0.09 * hit_wave * facing
-			scale_vec = Vector2(1.0 + 0.10 * hit_wave, 1.0 - 0.08 * hit_wave)
+			tilt -= 0.11 * hit_wave * facing
+			scale_vec = Vector2(1.0 + 0.12 * hit_wave, 1.0 - 0.10 * hit_wave)
 
 		var frame_idx: int = Atlas.frame_index(unit, clock)
 		var src_reg: Rect2 = Atlas.region(frame_idx)
@@ -441,7 +454,7 @@ func draw_soldier(unit: Dictionary) -> void:
 		draw_texture_rect_region(atlas.texture, local_dest, src_reg, Color.WHITE)
 		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
-	# 3. Crisp two-layer health bar (with delayed damage ghost bar)
+	# 3. Crisp two-layer health bar (with delayed damage ghost bar & highlight bevel)
 	var max_hp: float = unit_max_hp(unit)
 	var hp: float = clampf(float(unit.get("hp", max_hp)), 0.0, max_hp)
 	if hp < max_hp:
@@ -455,6 +468,18 @@ func draw_soldier(unit: Dictionary) -> void:
 			draw_rect(Rect2(bar_pos, Vector2(bar_w * ghost_ratio, bar_h)), GHOST_DAMAGE)
 		var fill_col: Color = FRIEND if is_friend else ENEMY
 		draw_rect(Rect2(bar_pos, Vector2(bar_w * ratio, bar_h)), fill_col)
+		if ratio > 0.04:
+			draw_rect(Rect2(bar_pos, Vector2(bar_w * ratio, 1.0)), fill_col.lightened(0.35))
+
+	# 4. Specialist / Elite visual crest badge
+	var is_spec: bool = unit.get("specialist", false)
+	var is_elite: bool = unit.get("elite", false)
+	if is_spec or is_elite:
+		var badge_pos := pos + Vector2(0, -48.0)
+		var crest_col := Color(1.0, 0.85, 0.25) if is_spec else Color(0.95, 0.60, 0.25)
+		draw_circle(badge_pos + Vector2(0, -2), 3.0, crest_col)
+		draw_line(badge_pos + Vector2(-4, 0), badge_pos + Vector2(4, 0), crest_col, 2.0)
+		draw_line(badge_pos + Vector2(0, -4), badge_pos + Vector2(0, 0), crest_col, 2.0)
 
 
 func draw_corpse(corpse: Dictionary, highlight: bool) -> void:
@@ -465,14 +490,21 @@ func draw_corpse(corpse: Dictionary, highlight: bool) -> void:
 
 	if highlight and FX.glow != null:
 		var h_rad: float = 28.0 + sin(clock * 8.0) * 2.5
-		draw_texture_rect(FX.glow, Rect2(pos - Vector2(h_rad, h_rad), Vector2(h_rad * 2.0, h_rad * 2.0)), false, Color(GOLD.r, GOLD.g, GOLD.b, 0.24))
+		draw_texture_rect(FX.glow, Rect2(pos - Vector2(h_rad, h_rad), Vector2(h_rad * 2.0, h_rad * 2.0)), false, Color(GOLD.r, GOLD.g, GOLD.b, 0.28))
 
 	draw_cached_ring(pos, 22.0, ring_col, Atlas.RING)
+
+	# Distinctive crest ring for specialist / elite corpses
+	var is_spec: bool = corpse.get("specialist", false)
+	var is_elite: bool = corpse.get("elite", false)
+	if is_spec or is_elite:
+		var badge_col := Color(1.0, 0.85, 0.25, 0.85) if is_spec else Color(0.95, 0.60, 0.25, 0.85)
+		draw_cached_ring(pos, 26.0, badge_col, Atlas.RING)
 
 	if atlas != null and atlas.get("texture") != null:
 		var c_reg: Rect2 = Atlas.region(Atlas.CORPSE)
 		var c_dest := Rect2(pos - Atlas.FX_ORIGIN, Vector2(Atlas.TILE, Atlas.TILE))
-		var c_tint := Color(1.0, 1.0, 1.0, 0.45 + 0.55 * decay_ratio)
+		var c_tint := Color(1.0, 1.0, 1.0, 0.50 + 0.50 * decay_ratio)
 		draw_texture_rect_region(atlas.texture, c_dest, c_reg, c_tint)
 
 
@@ -497,12 +529,12 @@ func draw_attack(effect: Dictionary) -> void:
 		var prev_air: Vector2 = from_p.lerp(to_p, prev_p) - Vector2(0.0, prev_lift)
 		var flight_angle: float = (air_pos - prev_air).angle()
 
-		# Subtle ground shadow under parabolic arrow
-		draw_line(ground_p - Vector2(6.0, 0.0), ground_p + Vector2(6.0, 0.0), Color(0, 0, 0, 0.22), 2.0)
+		# Ground shadow under parabolic arrow
+		draw_line(ground_p - Vector2(7.0, 0.0), ground_p + Vector2(7.0, 0.0), Color(0.02, 0.05, 0.04, 0.35), 2.5)
 
 		if FX.arrow != null:
 			draw_set_transform(air_pos, flight_angle, Vector2.ONE)
-			draw_texture_rect(FX.arrow, Rect2(Vector2(-32.0, -6.0), Vector2(64.0, 12.0)), false, tint.lightened(0.25))
+			draw_texture_rect(FX.arrow, Rect2(Vector2(-32.0, -6.0), Vector2(64.0, 12.0)), false, Color.WHITE)
 			draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 		else:
 			draw_line(prev_air, air_pos, tint.lightened(0.25), 2.5)
@@ -512,11 +544,13 @@ func draw_attack(effect: Dictionary) -> void:
 		var to_p: Vector2 = effect.get("to", center + Vector2.RIGHT)
 		var angle: float = float(effect.get("angle", (to_p - from_p).angle()))
 		var alpha: float = sin(progress * PI)
-		var slash_col := Color(tint.r, tint.g, tint.b, alpha * 0.92)
+		var slash_col := Color(tint.r, tint.g, tint.b, alpha * 0.95)
 		if FX.glow != null:
-			var g_col := Color(tint.r, tint.g, tint.b, alpha * 0.28)
-			draw_texture_rect(FX.glow, Rect2(center - Vector2(28.0, 28.0), Vector2(56.0, 56.0)), false, g_col)
+			var g_col := Color(tint.r, tint.g, tint.b, alpha * 0.35)
+			draw_texture_rect(FX.glow, Rect2(center - Vector2(30.0, 30.0), Vector2(60.0, 60.0)), false, g_col)
 		if FX.slash != null:
-			draw_set_transform(center, angle, Vector2(1.0 + 0.15 * progress, 1.0))
+			draw_set_transform(center, angle, Vector2(1.0 + 0.18 * progress, 1.0))
 			draw_texture_rect(FX.slash, Rect2(Vector2(-32.0, -32.0), Vector2(64.0, 64.0)), false, slash_col)
+			# Razor-hot core glint
+			draw_texture_rect(FX.slash, Rect2(Vector2(-28.0, -28.0), Vector2(56.0, 56.0)), false, Color(1, 1, 1, alpha * 0.72))
 			draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
