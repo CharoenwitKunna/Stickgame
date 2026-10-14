@@ -41,6 +41,17 @@ var visuals
 var scenery
 var font := FontFile.new()
 var title_font := FontFile.new()
+const CONTROLS_HINT := "WASD / arrows  Move     •     Left-click  March     •     Hold RMB  Raise     •     Space / Esc  Pause"
+var _ui_ready := false
+var _ui_outcome := ""
+var _ui_paused := false
+var _tooltip_id := -2
+var _tooltip_kind := ""
+var _tooltip_specialist := false
+var _tooltip_elite := false
+var _tooltip_soul := -1
+var _tooltip_raising := false
+var _tooltip_percent := -1
 
 func _ready() -> void:
 	font.load_dynamic_font("res://assets/body.ttf")
@@ -82,14 +93,15 @@ func world_to_screen(point: Vector2) -> Vector2:
 func inside_field(point: Vector2) -> bool:
 	return FIELD.has_point(world_to_screen(point)) if endless_mode else Model.ARENA.has_point(point)
 
-func update_camera() -> void:
+func update_camera(redraw_visuals: bool = true) -> void:
 	if world == null:
 		return
 	world.position = FIELD.size * 0.5 - battle.anchor
 	var rectangle := Rect2(-world.position, FIELD.size)
 	visuals.visible_world = rectangle.grow(96)
 	scenery.update_view(rectangle)
-	visuals.queue_redraw()
+	if redraw_visuals:
+		visuals.queue_redraw()
 	revive_pointer = screen_to_world(revive_screen_pointer)
 
 func style_box(fill: Color, border: Color, radius: int = 8) -> StyleBoxFlat:
@@ -200,7 +212,7 @@ func _physics_process(delta: float) -> void:
 	if not paused and not reset_dialog.visible:
 		var previous: String = battle.outcome
 		battle.tick(delta, movement_input())
-		update_camera()
+		update_camera(false) # animate() below already invalidates soldier drawing.
 		update_revive(delta, revive_pointer)
 		visuals.animate(delta)
 		if previous != battle.outcome:
@@ -386,45 +398,62 @@ func reset_game() -> void:
 	persist()
 
 func refresh_ui() -> void:
-	action.visible = not battle.outcome.is_empty()
-	result_panel.visible = paused or not battle.outcome.is_empty()
-	banner.visible = result_panel.visible
-	result_help.visible = result_panel.visible
-	if battle.outcome == "victory":
-		banner.text = "The field is yours."
-		banner.modulate = FRIEND
-		result_help.text = "VICTORY · Raise remaining corpses before the next battle."
-		action.text = "Next battle"
-	elif battle.outcome == "defeat":
-		banner.text = "Live to fight again."
-		banner.modulate = ENEMY
-		result_help.text = "DEFEAT · Your army recovers. Every recruit is kept."
-		action.text = "Retry battle"
-	elif paused:
-		banner.text = "Battle paused"
-		banner.modulate = INK
-		result_help.text = "Press Space or Resume to return to the field."
-	else:
-		banner.text = ""
-		result_help.text = ""
-	tooltip.visible = hovered >= 0 and hovered < battle.corpses.size() and not paused and battle.outcome != "defeat"
-	if tooltip.visible:
+	if not _ui_ready or _ui_outcome != battle.outcome or _ui_paused != paused:
+		_ui_ready = true
+		_ui_outcome = battle.outcome
+		_ui_paused = paused
+		action.visible = not battle.outcome.is_empty()
+		result_panel.visible = paused or not battle.outcome.is_empty()
+		banner.visible = result_panel.visible
+		result_help.visible = result_panel.visible
+		if battle.outcome == "victory":
+			banner.text = "The field is yours."
+			banner.modulate = FRIEND
+			result_help.text = "VICTORY · Raise remaining corpses before the next battle."
+			action.text = "Next battle"
+		elif battle.outcome == "defeat":
+			banner.text = "Live to fight again."
+			banner.modulate = ENEMY
+			result_help.text = "DEFEAT · Your army recovers. Every recruit is kept."
+			action.text = "Retry battle"
+		elif paused:
+			banner.text = "Battle paused"
+			banner.modulate = INK
+			result_help.text = "Press Space or Resume to return to the field."
+		else:
+			banner.text = ""
+			result_help.text = ""
+	var show_tooltip: bool = hovered >= 0 and hovered < battle.corpses.size() and not paused and battle.outcome != "defeat"
+	if tooltip.visible != show_tooltip:
+		tooltip.visible = show_tooltip
+	if show_tooltip:
 		var corpse: Dictionary = battle.corpses[hovered]
-		var stats: Dictionary = Model.STATS[corpse.kind]
+		# Position still follows the camera even when the displayed text is cached.
 		var screen_point := world_to_screen(corpse.pos)
 		tooltip.position = Vector2(clampf(screen_point.x + 34, 45, 984), clampf(screen_point.y - 82, 12, 652))
 		var is_spec: bool = corpse.get("specialist", false)
 		var is_elite: bool = corpse.get("elite", false)
-		var prefix: String = "Veteran " if is_spec else ("Elite " if is_elite else "")
-		var suffix: String = " ★" if (is_spec or is_elite) else ""
-		tooltip_title.text = "Raise %s%s%s" % [prefix, stats.name, suffix]
-		if revive_id == int(corpse.id):
-			tooltip_help.text = "Raising %d%% · Release to cancel" % roundi(visuals.channel_progress * 100)
-		else:
-			tooltip_help.text = "Hold RMB · %d Soul · %d available" % [stats.cost, battle.soul]
+		var changed: bool = _tooltip_id != int(corpse.id) or _tooltip_kind != corpse.kind or _tooltip_specialist != is_spec or _tooltip_elite != is_elite
+		if changed:
+			_tooltip_id = int(corpse.id)
+			_tooltip_kind = corpse.kind
+			_tooltip_specialist = is_spec
+			_tooltip_elite = is_elite
+			var prefix: String = "Veteran " if is_spec else ("Elite " if is_elite else "")
+			var suffix: String = " ★" if (is_spec or is_elite) else ""
+			tooltip_title.text = "Raise %s%s%s" % [prefix, Model.STATS[corpse.kind].name, suffix]
+		var raising := revive_id == int(corpse.id)
+		var percent: int = roundi(visuals.channel_progress * 100) if raising else -1
+		if changed or _tooltip_raising != raising or _tooltip_percent != percent or _tooltip_soul != battle.soul:
+			_tooltip_raising = raising
+			_tooltip_percent = percent
+			_tooltip_soul = battle.soul
+			tooltip_help.text = "Raising %d%% · Release to cancel" % percent if raising else "Hold RMB · %d Soul · %d available" % [Model.STATS[corpse.kind].cost, battle.soul]
 	if status_time <= 0:
-		hint.text = "WASD / arrows  Move     •     Left-click  March     •     Hold RMB  Raise     •     Space / Esc  Pause"
-		hint.modulate = Color.WHITE
+		if hint.text != CONTROLS_HINT:
+			hint.text = CONTROLS_HINT
+		if hint.modulate != Color.WHITE:
+			hint.modulate = Color.WHITE
 
 func _draw() -> void:
 	draw_rect(Rect2(0, 0, 1280, 800), PANEL)

@@ -14,6 +14,12 @@ var shrubs: Array = []
 var trees: Array = []
 var wind_clock: float = 0.0
 var _terrain_dirty: bool = false
+var static_canvas: Node2D
+
+class StaticCanvas extends Node2D:
+	var painter
+	func _draw() -> void:
+		painter.draw_static(self)
 
 
 func _ready() -> void:
@@ -21,6 +27,10 @@ func _ready() -> void:
 	rng.seed = 73631
 	tuf_and_stone_setup(rng)
 	paint_terrain()
+	static_canvas = StaticCanvas.new()
+	static_canvas.painter = self
+	static_canvas.show_behind_parent = true
+	add_child(static_canvas)
 	set_process(true)
 
 
@@ -102,6 +112,8 @@ func paint_terrain() -> void:
 	var inv_scale := Vector2(float(IMG_W) / VIEW_SIZE.x, float(IMG_H) / VIEW_SIZE.y)
 
 	for y in range(IMG_H):
+		var norm_dy: float = (float(y) - center.y) / (IMG_H * 0.42)
+		var path_band: float = clampf(1.0 - absf(norm_dy) * 2.3, 0.0, 1.0)
 		for x in range(IMG_W):
 			var n := terrain_noise(noise, float(x), float(y))
 			var d := terrain_noise(detail_noise, float(x), float(y))
@@ -110,14 +122,12 @@ func paint_terrain() -> void:
 				base_col = base_col.lerp(light_glade, (d - 0.60) * 0.8)
 
 			# Subtle worn central battle lane & soft cinematic outer vignette
-			var norm_dx: float = (float(x) - center.x) / (IMG_W * 0.46)
-			var norm_dy: float = (float(y) - center.y) / (IMG_H * 0.42)
-			var radial: float = norm_dx * norm_dx + norm_dy * norm_dy
-			var path_band: float = clampf(1.0 - absf(norm_dy) * 2.3, 0.0, 1.0)
 			if not tileable:
+				var norm_dx: float = (float(x) - center.x) / (IMG_W * 0.46)
+				var radial: float = norm_dx * norm_dx + norm_dy * norm_dy
 				base_col = base_col.lerp(worn_path, path_band * 0.22 * d)
-			if not tileable and radial > 0.65:
-				base_col = base_col.darkened(clampf((radial - 0.65) * 0.38, 0.0, 0.28))
+				if radial > 0.65:
+					base_col = base_col.darkened(clampf((radial - 0.65) * 0.38, 0.0, 0.28))
 
 			terrain_image.set_pixel(x, y, base_col)
 
@@ -128,6 +138,8 @@ func paint_terrain() -> void:
 		_bake_soft_oval(sp + Vector2(0.5, 1.2), sr, Color(0.04, 0.07, 0.06, 0.48))
 
 	terrain_texture = ImageTexture.create_from_image(terrain_image)
+	if static_canvas != null:
+		static_canvas.queue_redraw()
 
 
 func _bake_soft_oval(center_px: Vector2, radius_px: Vector2, tint: Color) -> void:
@@ -157,27 +169,31 @@ func stamp_battle_scar(world_pos: Vector2, radius: float = 18.0) -> void:
 	_terrain_dirty = true
 
 
-func ellipse(center: Vector2, radius: Vector2, color: Color) -> void:
-	draw_set_transform(center, 0.0, Vector2(1.0, radius.y / maxf(0.001, radius.x)))
-	draw_circle(Vector2.ZERO, radius.x, color)
-	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+func ellipse(center: Vector2, radius: Vector2, color: Color, target: Node2D = null) -> void:
+	var canvas: Node2D = self if target == null else target
+	canvas.draw_set_transform(center, 0.0, Vector2(1.0, radius.y / maxf(0.001, radius.x)))
+	canvas.draw_circle(Vector2.ZERO, radius.x, color)
+	canvas.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
 
-func _draw() -> void:
+func draw_static(canvas: Node2D) -> void:
 	if terrain_texture != null:
-		draw_texture_rect(terrain_texture, Rect2(Vector2.ZERO, VIEW_SIZE), false)
+		canvas.draw_texture_rect(terrain_texture, Rect2(Vector2.ZERO, VIEW_SIZE), false)
 
 	# Stones (contact shadows are pre-baked into terrain_texture)
 	for stone in stones:
 		var sp: Vector2 = stone.pos
 		var sr: Vector2 = stone.radius
-		ellipse(sp, sr + Vector2(1.2, 1.2), OUTLINE)
-		ellipse(sp, sr, stone.color)
+		ellipse(sp, sr + Vector2(1.2, 1.2), OUTLINE, canvas)
+		ellipse(sp, sr, stone.color, canvas)
 		# Shadowed underbelly
-		ellipse(sp + Vector2(sr.x * 0.15, sr.y * 0.2), sr * 0.75, stone.color.darkened(0.22))
+		ellipse(sp + Vector2(sr.x * 0.15, sr.y * 0.2), sr * 0.75, stone.color.darkened(0.22), canvas)
 		# Sunlit top-left glint
-		ellipse(sp - Vector2(sr.x * 0.25, sr.y * 0.25), sr * 0.42, stone.color.lightened(0.24))
+		ellipse(sp - Vector2(sr.x * 0.25, sr.y * 0.25), sr * 0.42, stone.color.lightened(0.24), canvas)
 
+
+func _draw() -> void:
+	# The static child remains behind grass/trees, preserving original layering.
 	# Wind-animated grass tufts (cleaner silhouette & softer visual noise)
 	for tuft in tufts:
 		var p: Vector2 = tuft.pos

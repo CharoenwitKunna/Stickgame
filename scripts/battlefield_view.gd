@@ -42,6 +42,8 @@ var _draw_order: Dictionary = {}
 # Trailing HP ghost bar state & facing cache (keyed by unit.id)
 var _hp_ghost: Dictionary = {}
 var _unit_facing: Dictionary = {}
+var _live_ids: Dictionary = {}
+var _cache_prune: Array[int] = []
 
 # Pre-allocated Struct-of-Arrays (SoA) ring buffer for particles (zero GC churn)
 var _p_pos := PackedVector2Array()
@@ -97,6 +99,8 @@ func reset_effects() -> void:
 	motes.clear()
 	_hp_ghost.clear()
 	_unit_facing.clear()
+	_live_ids.clear()
+	_cache_prune.clear()
 	for i in range(MAX_MOTES):
 		motes.append({
 			"pos": Vector2(randf_range(60.0, 1220.0), randf_range(40.0, 700.0)),
@@ -167,24 +171,25 @@ func animate(delta: float) -> void:
 
 	# Update SoA particle pool in-place (zero allocations)
 	var active := 0
-	for i in range(MAX_PARTICLES):
-		var life: float = _p_life[i]
-		if life <= 0.0:
-			continue
-		life -= delta
-		_p_life[i] = life
-		if life <= 0.0:
-			continue
-		active += 1
-		var vel: Vector2 = _p_vel[i]
-		if _p_rising[i] == 1:
-			vel.x += sin(clock * 6.0 + float(i)) * 18.0 * delta
-			vel.y -= 15.0 * delta
-		else:
-			vel = vel.move_toward(Vector2.ZERO, 110.0 * delta)
-			vel.y += 95.0 * delta
-		_p_vel[i] = vel
-		_p_pos[i] += vel * delta
+	if _p_active_count > 0:
+		for i in range(MAX_PARTICLES):
+			var life: float = _p_life[i]
+			if life <= 0.0:
+				continue
+			life -= delta
+			_p_life[i] = life
+			if life <= 0.0:
+				continue
+			active += 1
+			var vel: Vector2 = _p_vel[i]
+			if _p_rising[i] == 1:
+				vel.x += sin(clock * 6.0 + float(i)) * 18.0 * delta
+				vel.y -= 15.0 * delta
+			else:
+				vel = vel.move_toward(Vector2.ZERO, 110.0 * delta)
+				vel.y += 95.0 * delta
+			_p_vel[i] = vel
+			_p_pos[i] += vel * delta
 	_p_active_count = active
 
 	# Update impact pulses backward using swap-and-pop
@@ -232,21 +237,30 @@ func animate(delta: float) -> void:
 
 	# Decay trailing HP ghost values smoothly
 	if battle != null and "units" in battle:
-		var live_ids: Dictionary = {}
+		_live_ids.clear()
 		for unit in battle.units:
 			var uid: int = unit.get("id", -1)
-			live_ids[uid] = true
+			_live_ids[uid] = true
 			var max_hp: float = unit_max_hp(unit)
 			var ratio: float = clampf(float(unit.get("hp", max_hp)) / max_hp, 0.0, 1.0)
 			var prev_ghost: float = _hp_ghost.get(uid, ratio)
-			if ratio < prev_ghost:
-				_hp_ghost[uid] = move_toward(prev_ghost, ratio, delta * 0.95)
+			if ratio < 1.0:
+				_hp_ghost[uid] = move_toward(prev_ghost, ratio, delta * 0.95) if ratio < prev_ghost else ratio
 			else:
-				_hp_ghost[uid] = ratio
-		for uid in _hp_ghost.keys():
-			if not live_ids.has(uid):
 				_hp_ghost.erase(uid)
-				_unit_facing.erase(uid)
+		# Prune both caches independently: healthy soldiers need no HP entry.
+		_cache_prune.clear()
+		for uid in _hp_ghost:
+			if not _live_ids.has(uid):
+				_cache_prune.append(uid)
+		for uid in _cache_prune:
+			_hp_ghost.erase(uid)
+		_cache_prune.clear()
+		for uid in _unit_facing:
+			if not _live_ids.has(uid):
+				_cache_prune.append(uid)
+		for uid in _cache_prune:
+			_unit_facing.erase(uid)
 
 	queue_redraw()
 
@@ -347,7 +361,7 @@ func initializers_fallback_effects() -> void:
 func _draw_particles_and_motes() -> void:
 	var dot_tex: Texture2D = FX.dot
 	var glow_tex: Texture2D = FX.glow
-	if dot_tex != null:
+	if dot_tex != null and _p_active_count > 0:
 		for i in range(MAX_PARTICLES):
 			var life: float = _p_life[i]
 			if life <= 0.0:
@@ -371,7 +385,7 @@ func draw_cached_ring(point: Vector2, radius: float, tint: Color, index: int = A
 	if atlas == null or atlas.get("texture") == null:
 		draw_arc(point, radius, 0.0, TAU, 32, tint, 2.0)
 		return
-	var reg: Rect2 = Atlas.region(index)
+	var reg: Rect2 = Atlas.regions[index]
 	var diameter: float = radius * 2.0
 	var dest := Rect2(point - Vector2(radius, radius), Vector2(diameter, diameter))
 	draw_texture_rect_region(atlas.texture, dest, reg, tint)
@@ -427,7 +441,7 @@ func draw_soldier(unit: Dictionary) -> void:
 
 	# 1. Ground shadow from atlas
 	if atlas != null and atlas.get("texture") != null:
-		var shadow_reg: Rect2 = Atlas.region(Atlas.SHADOW)
+		var shadow_reg: Rect2 = Atlas.regions[Atlas.SHADOW]
 		var shadow_dest := Rect2(pos - Atlas.ORIGIN, Vector2(Atlas.TILE, Atlas.TILE))
 		draw_texture_rect_region(atlas.texture, shadow_dest, shadow_reg, Color(1, 1, 1, 0.88))
 
@@ -446,13 +460,16 @@ func draw_soldier(unit: Dictionary) -> void:
 			scale_vec = Vector2(1.0 + 0.12 * hit_wave, 1.0 - 0.10 * hit_wave)
 
 		var frame_idx: int = Atlas.frame_index(unit, clock)
-		var src_reg: Rect2 = Atlas.region(frame_idx)
+		var src_reg: Rect2 = Atlas.regions[frame_idx]
 		var draw_w: float = float(Atlas.TILE) * (1.0 if facing >= 0.0 else -1.0)
 		var local_dest := Rect2(-Atlas.ORIGIN, Vector2(draw_w, float(Atlas.TILE)))
 
-		draw_set_transform(pos, tilt, scale_vec)
-		draw_texture_rect_region(atlas.texture, local_dest, src_reg, Color.WHITE)
-		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+		if tilt == 0.0 and scale_vec == Vector2.ONE:
+			draw_texture_rect_region(atlas.texture, Rect2(pos + local_dest.position, local_dest.size), src_reg, Color.WHITE)
+		else:
+			draw_set_transform(pos, tilt, scale_vec)
+			draw_texture_rect_region(atlas.texture, local_dest, src_reg, Color.WHITE)
+			draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
 	# 3. Crisp two-layer health bar (with delayed damage ghost bar & highlight bevel)
 	var max_hp: float = unit_max_hp(unit)
@@ -463,13 +480,13 @@ func draw_soldier(unit: Dictionary) -> void:
 		var bar_w: float = 26.0
 		var bar_h: float = 4.0
 		var bar_pos := pos + Vector2(-bar_w * 0.5, -54.0)
-		draw_rect(Rect2(bar_pos - Vector2(1.0, 1.0), Vector2(bar_w + 2.0, bar_h + 2.0)), OUTLINE)
+		draw_atlas_rect(Rect2(bar_pos - Vector2(1.0, 1.0), Vector2(bar_w + 2.0, bar_h + 2.0)), OUTLINE)
 		if ghost_ratio > ratio + 0.01:
-			draw_rect(Rect2(bar_pos, Vector2(bar_w * ghost_ratio, bar_h)), GHOST_DAMAGE)
+			draw_atlas_rect(Rect2(bar_pos, Vector2(bar_w * ghost_ratio, bar_h)), GHOST_DAMAGE)
 		var fill_col: Color = FRIEND if is_friend else ENEMY
-		draw_rect(Rect2(bar_pos, Vector2(bar_w * ratio, bar_h)), fill_col)
+		draw_atlas_rect(Rect2(bar_pos, Vector2(bar_w * ratio, bar_h)), fill_col)
 		if ratio > 0.04:
-			draw_rect(Rect2(bar_pos, Vector2(bar_w * ratio, 1.0)), fill_col.lightened(0.35))
+			draw_atlas_rect(Rect2(bar_pos, Vector2(bar_w * ratio, 1.0)), fill_col.lightened(0.35))
 
 	# 4. Specialist / Elite visual crest badge
 	var is_spec: bool = unit.get("specialist", false)
@@ -480,6 +497,13 @@ func draw_soldier(unit: Dictionary) -> void:
 		draw_circle(badge_pos + Vector2(0, -2), 3.0, crest_col)
 		draw_line(badge_pos + Vector2(-4, 0), badge_pos + Vector2(4, 0), crest_col, 2.0)
 		draw_line(badge_pos + Vector2(0, -4), badge_pos + Vector2(0, 0), crest_col, 2.0)
+
+
+func draw_atlas_rect(rectangle: Rect2, tint: Color) -> void:
+	if atlas != null and atlas.texture != null:
+		draw_texture_rect_region(atlas.texture, rectangle, Atlas.solid_region, tint)
+	else:
+		draw_rect(rectangle, tint)
 
 
 func draw_corpse(corpse: Dictionary, highlight: bool) -> void:
@@ -502,7 +526,7 @@ func draw_corpse(corpse: Dictionary, highlight: bool) -> void:
 		draw_cached_ring(pos, 26.0, badge_col, Atlas.RING)
 
 	if atlas != null and atlas.get("texture") != null:
-		var c_reg: Rect2 = Atlas.region(Atlas.CORPSE)
+		var c_reg: Rect2 = Atlas.regions[Atlas.CORPSE]
 		var c_dest := Rect2(pos - Atlas.FX_ORIGIN, Vector2(Atlas.TILE, Atlas.TILE))
 		var c_tint := Color(1.0, 1.0, 1.0, 0.50 + 0.50 * decay_ratio)
 		draw_texture_rect_region(atlas.texture, c_dest, c_reg, c_tint)

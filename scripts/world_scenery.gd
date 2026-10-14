@@ -15,6 +15,14 @@ var cache_seed := -1
 var cache_visit := 0
 var landmark_signature: Array = []
 var terrain_builds := 0
+var view_rebuilds := 0
+var metadata_snapshot: Dictionary = {}
+var metadata_seed := -1
+var metadata_low := Vector2i(2147483647, 2147483647)
+var metadata_high := Vector2i(2147483647, 2147483647)
+var landmarks_changed := false
+const EMPTY_STATE: Array = []
+const EMPTY_DESTINATION: Dictionary = {}
 const TERRAIN_CACHE_LIMIT := 64
 
 class BackgroundCanvas extends Node2D:
@@ -63,6 +71,12 @@ func _ready() -> void:
 	update_view(view_rect)
 
 func update_view(rectangle: Rect2) -> void:
+	var terrain_changed := refresh_metadata(rectangle)
+	if rectangle == view_rect and not terrain_changed and cache_seed == metadata_seed:
+		if landmarks_changed:
+			refresh_landmarks()
+		return
+	view_rebuilds += 1
 	var old_low := Vector2i(floori(view_rect.position.x / TILE.x), floori(view_rect.position.y / TILE.y))
 	var old_high := Vector2i(floori(view_rect.end.x / TILE.x), floori(view_rect.end.y / TILE.y))
 	view_rect = rectangle
@@ -124,6 +138,44 @@ func update_view(rectangle: Rect2) -> void:
 				oldest_visit = terrain_regions[key].visit
 		terrain_regions[oldest].queue_free()
 		terrain_regions.erase(oldest)
+	if landmarks_changed:
+		refresh_landmarks()
+
+func refresh_metadata(rectangle: Rect2) -> bool:
+	# Plain destination dictionaries can change directly (including in tests).
+	# Compare scalar snapshots rather than trusting only camera/streaming changes.
+	var next_seed: int = wilderness.seed_value if wilderness != null else 1
+	var low := Vector2i(floori(rectangle.position.x / REGION_SIZE), floori(rectangle.position.y / REGION_SIZE))
+	var high := Vector2i(floori(rectangle.end.x / REGION_SIZE), floori(rectangle.end.y / REGION_SIZE))
+	landmarks_changed = false
+	var terrain_changed := false
+	if next_seed != metadata_seed or low != metadata_low or high != metadata_high:
+		metadata_snapshot.clear()
+		metadata_seed = next_seed
+		metadata_low = low
+		metadata_high = high
+		terrain_changed = true
+		landmarks_changed = true
+	for x in range(low.x - 1, high.x + 2):
+		for y in range(low.y - 1, high.y + 2):
+			var key := Vector2i(x, y)
+			var dest: Dictionary = EMPTY_DESTINATION
+			if wilderness != null and wilderness.regions.has(key):
+				dest = wilderness.regions[key].get("destination", EMPTY_DESTINATION)
+			var point: Vector2 = dest.get("pos", Vector2(key) * REGION_SIZE + Vector2(600, 600))
+			var dtype: String = dest.get("type", "")
+			var used: bool = dest.get("used", false)
+			var region: Vector2i = dest.get("region", key)
+			var present := not dest.is_empty()
+			var previous: Array = metadata_snapshot.get(key, EMPTY_STATE)
+			if previous.is_empty() or previous[0] != point or previous[1] != present:
+				terrain_changed = true
+			if previous.is_empty() or previous[0] != point or previous[1] != present or previous[2] != dtype or previous[3] != used or previous[4] != region:
+				metadata_snapshot[key] = [point, present, dtype, used, region]
+				landmarks_changed = true
+	return terrain_changed
+
+func refresh_landmarks() -> void:
 	var signature: Array = []
 	if wilderness != null:
 		for dest in wilderness.get_visible_landmarks(view_rect):

@@ -15,6 +15,8 @@ const RING := COST + 1
 const TIMER := RING + 1
 const TIMER_STEPS := 64
 const TOTAL := TIMER + TIMER_STEPS + 1
+const SOLID := TOTAL # A previously unused tile; existing pose indices are unchanged.
+static var solid_region: Rect2
 const FX_ORIGIN := Vector2(48, 48)
 const KINDS := {"sword": 0, "archer": 1, "shield": 2}
 static var shared_texture: ImageTexture
@@ -25,8 +27,13 @@ func _init() -> void:
 	if shared_texture == null:
 		var image := Image.load_from_file("res://assets/soldiers.png")
 		assert(image != null and image.get_size() == SIZE, "Soldier atlas missing or invalid; run the atlas baker.")
+		# White texels let health bars share the soldier texture without moving
+		# overlays above other units and changing Y-ordered occlusion.
+		var corner := Vector2i(region(SOLID).position) + Vector2i(1, 1)
+		image.fill_rect(Rect2i(corner, Vector2i(9, 9)), Color.WHITE)
+		solid_region = Rect2(Vector2(corner + Vector2i(4, 4)), Vector2.ONE)
 		shared_texture = ImageTexture.create_from_image(image)
-		for i in range(TOTAL):
+		for i in range(TOTAL + 1):
 			regions.append(region(i))
 	texture = shared_texture
 

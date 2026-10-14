@@ -34,6 +34,10 @@ var next_effect_id := 1
 var rng := RandomNumberGenerator.new()
 var time := 0.0
 var team_groups := [[], []]
+var kind_stats: Dictionary = STATS
+var attack_loads := [{}, {}]
+var chase_loads := [{}, {}]
+var live_counts := PackedInt32Array([0, 0])
 var use_team_groups := false
 var separation_buckets: Dictionary = {}
 var separation_cells: Array[Vector2i] = []
@@ -62,6 +66,11 @@ func start_battle() -> void:
 	search_cells_scratch.clear()
 	team_groups[0].clear()
 	team_groups[1].clear()
+	attack_loads[0].clear()
+	attack_loads[1].clear()
+	chase_loads[0].clear()
+	chase_loads[1].clear()
+	live_counts.fill(0)
 	search_buckets[0].clear()
 	search_buckets[1].clear()
 	search_order.clear()
@@ -99,11 +108,12 @@ func spawn_unit(kind: String, team: int, position: Vector2) -> Dictionary:
 	# Remember invalidation even if an enemy spawn restores the old array length.
 	if slot_unit_count != units.size():
 		slot_unit_count = -1
-	var stats: Dictionary = STATS[kind]
+	var stats: Dictionary = kind_stats[kind]
 	var unit := {"id": next_id, "kind": kind, "team": team, "pos": position,
 		"hp": float(stats.hp), "max_hp": float(stats.hp), "cooldown": rng.randf_range(0.0, 0.4),
 		"wander": position, "wander_timer": 0.0, "flash": 0.0, "step": rng.randf_range(0, TAU), "moving": false,
-		"facing": 1.0 if team == 0 else -1.0, "attack": 0.0}
+		"facing": 1.0 if team == 0 else -1.0, "attack": 0.0,
+		"stats": stats, "radius": float(BODY_RADII[kind]), "inv_mass": 1.0 / float(BODY_MASSES[kind])}
 	if team == 0:
 		sync_formation_slots()
 		unit.slot = first_free_slot
@@ -224,16 +234,19 @@ func nearest_in_grid(unit: Dictionary, radius: float, target_loads: Dictionary =
 	# Iterate its keys instead of probing dozens of empty cells per idle enemy.
 	if buckets.size() <= 8 and buckets.size() < (high.x - low.x + 1) * (high.y - low.y + 1):
 		for cell in buckets:
-			if cell != center and cell.x >= low.x and cell.x <= high.x and cell.y >= low.y and cell.y <= high.y:
+			if cell != center and cell.x >= low.x and cell.x <= high.x and cell.y >= low.y and cell.y <= high.y and not buckets[cell].is_empty():
 				search_cells_scratch.append(cell)
 	else:
+		# Keep column pruning: a neighbor-first prepass regressed crowded queries.
 		for x in range(low.x, high.x + 1):
 			var dx: float = point.x - clampf(point.x, x * 128.0, (x + 1) * 128.0)
 			if dx * dx > best:
 				continue
 			for y in range(low.y, high.y + 1):
 				var cell := Vector2i(x, y)
-				if cell != center:
+				if cell == center:
+					continue
+				if not buckets.get(cell, EMPTY_BUCKET).is_empty():
 					search_cells_scratch.append(cell)
 	for cell in search_cells_scratch:
 		var dx: float = point.x - clampf(point.x, cell.x * 128.0, (cell.x + 1) * 128.0)
@@ -286,12 +299,14 @@ func tick(delta: float, direction: Vector2) -> void:
 		else:
 			team_groups[int(unit.team)].append(unit)
 	use_team_groups = true
-	var attack_loads := [{}, {}]
-	var chase_loads := [{}, {}]
+	attack_loads[0].clear()
+	attack_loads[1].clear()
+	chase_loads[0].clear()
+	chase_loads[1].clear()
 	for unit in units:
 		if unit.hp <= 0:
 			continue
-		var stats: Dictionary = STATS[unit.kind]
+		var stats: Dictionary = unit.stats
 		unit.cooldown = maxf(0, float(unit.cooldown) - delta)
 		unit.flash = maxf(0, float(unit.flash) - delta)
 		unit.attack = maxf(0, float(unit.attack) - delta)
@@ -395,9 +410,9 @@ func tick(delta: float, direction: Vector2) -> void:
 		effects[i].ttl = float(effects[i].ttl) - delta
 		if effects[i].ttl <= 0:
 			effects.remove_at(i)
-	if alive_count(0) == 0:
+	if live_counts[0] == 0:
 		outcome = "defeat"
-	elif not endless and alive_count(1) == 0:
+	elif not endless and live_counts[1] == 0:
 		outcome = "victory"
 
 func separate_units(delta: float) -> void:
@@ -408,7 +423,7 @@ func separate_units(delta: float) -> void:
 	clear_bucket_contents(separation_buckets)
 	separation_cells.resize(units.size())
 	for i in range(units.size()):
-		if units[i].pos != clamp_point(units[i].pos):
+		if not endless and units[i].pos != clamp_point(units[i].pos):
 			separate_brute(delta)
 			return
 		var cell := separation_cell(units[i].pos)
@@ -470,7 +485,11 @@ func move_separation_entry(index: int, point: Vector2) -> void:
 
 func push_pair(a: Dictionary, b: Dictionary, delta: float) -> bool:
 	var offset: Vector2 = a.pos - b.pos
-	var minimum_distance: float = float(BODY_RADII[a.kind]) + float(BODY_RADII[b.kind])
+	var minimum_distance: float = a.radius + b.radius
+	if offset.length_squared() >= minimum_distance * minimum_distance:
+		return false
+	# Vector2.length() retains the original float32 rounding for touching pairs;
+	# GDScript sqrt() uses float64 and can change later collision corrections.
 	var length: float = offset.length()
 	if length >= minimum_distance:
 		return false
@@ -479,8 +498,8 @@ func push_pair(a: Dictionary, b: Dictionary, delta: float) -> bool:
 	# Soft circle collisions with bounded positional correction; heavier shields
 	# yield less, so a crowd opens around them instead of collapsing into them.
 	var total_push: float = minf(overlap, minf(MAX_PAIR_PUSH, maxf(delta * 240.0, overlap * 0.45)))
-	var inverse_a: float = 1.0 / float(BODY_MASSES[a.kind])
-	var inverse_b: float = 1.0 / float(BODY_MASSES[b.kind])
+	var inverse_a: float = a.inv_mass
+	var inverse_b: float = b.inv_mass
 	var inverse_total: float = inverse_a + inverse_b
 	a.pos = clamp_point(a.pos + normal * total_push * inverse_a / inverse_total)
 	b.pos = clamp_point(b.pos - normal * total_push * inverse_b / inverse_total)
@@ -527,9 +546,15 @@ func is_combat_active(radius: float = 360.0) -> bool:
 
 func collect_dead() -> void:
 	sync_formation_slots()
+	var friendly_count := 0
+	var enemy_count := 0
 	for i in range(units.size() - 1, -1, -1):
 		var unit: Dictionary = units[i]
 		if unit.hp > 0:
+			if unit.team == 0:
+				friendly_count += 1
+			else:
+				enemy_count += 1
 			continue
 		if unit.team == 1:
 			soul += 2
@@ -544,6 +569,8 @@ func collect_dead() -> void:
 			first_free_slot = mini(first_free_slot, int(unit.slot))
 		search_order.erase(unit.id)
 		units.remove_at(i)
+	live_counts[0] = friendly_count
+	live_counts[1] = enemy_count
 	slot_unit_count = units.size()
 
 func alive_count(team: int) -> int:
